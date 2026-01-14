@@ -146,9 +146,6 @@ class Trainer:
                 self.optimizer.zero_grad()
                 loss.backward()
                 
-                if self.step % 100 == 0:
-                    self._log_gradients()
-
                 grad_norm = torch.nn.utils.clip_grad_norm_(
                     list(self.resampler.parameters()) + list(self.dit.parameters()) + [self.null_cond], 
                     self.cfg.train.grad_clip
@@ -266,14 +263,3 @@ class Trainer:
             logger.info(f"Loaded checkpoint from {path}, resuming from epoch {self.start_epoch}")
         else:
             logger.info(f"Loaded checkpoint from {path}")
-
-    def _log_gradients(self):
-        for name, param in self.resampler.named_parameters():
-            if param.grad is not None:
-                self.writer.add_histogram(f"Grad/Resampler/{name}", param.grad, self.step)
-        for name, param in self.dit.named_parameters():
-            if param.grad is not None:
-                self.writer.add_histogram(f"Grad/DiT/{name}", param.grad, self.step)
-        if self.null_cond.grad is not None:
-            self.writer.add_histogram("Grad/NullCond", self.null_cond.grad, self.step)
-

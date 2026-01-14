@@ -11,11 +11,11 @@ log_file=logs/train_$(date +%Y%m%d_%H%M%S).log
 # 基础训练命令
 nohup python main.py \
     mode=train \
-    data.device=cuda:0 \
-    diffusion.prediction_type=eps \
-    exp_dir=exps/eps3 \
+    data.device=cuda:2 \
+    diffusion.prediction_type=x \
+    exp_dir=exps/x2 \
     train.epochs=1000 \
-    train.batch_size=64 \
+    train.batch_size=128 \
     msg=train流程第一次测试 \
     > $log_file 2>&1 &
 
