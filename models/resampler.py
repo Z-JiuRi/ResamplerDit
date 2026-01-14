@@ -18,7 +18,7 @@ class RMSNorm(nn.Module):
 
 
 class PerceiverResampler(nn.Module):
-    def __init__(self, input_dim=512, hidden_dim=768, cond_len=224, latent_cond_len=64, num_heads=8, depth=4):
+    def __init__(self, input_dim=512, hidden_dim=768, cond_len=224, latent_cond_len=64, num_heads=8, depth=4, dropout=0.1):
         """
         __init__:
             Args:
@@ -27,7 +27,7 @@ class PerceiverResampler(nn.Module):
                 cond_len: 原始条件序列的长度
                 latent_cond_len: 压缩后的 Latent Token 数量 (即 Queries 的数量)
                 depth: Self-Attention (Transformer Encoder) 的层数
-
+                dropout: 0.1
         forward:
             Args:
                 cond: 输入条件特征 (B, cond_len=224, cond_dim=512)
@@ -41,7 +41,10 @@ class PerceiverResampler(nn.Module):
         
         # 1. 输入预处理
         self.input_norm = RMSNorm(input_dim)
-        self.input_proj = nn.Linear(input_dim, hidden_dim)
+        self.input_proj = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.Dropout(dropout)
+        )
         self.pos_embbed = nn.Parameter(torch.randn(1, cond_len, hidden_dim) * 0.02)
         
         # 2. 定义可学习的 Latent Queries
@@ -49,7 +52,7 @@ class PerceiverResampler(nn.Module):
         self.pos_emb_latents = nn.Parameter(torch.randn(1, latent_cond_len, hidden_dim) * 0.02)
         
         # 3. Cross-Attention 层 (压缩: Input -> Latent)
-        self.cross_attn = nn.MultiheadAttention(hidden_dim, num_heads, batch_first=True)
+        self.cross_attn = nn.MultiheadAttention(hidden_dim, num_heads, batch_first=True, dropout=dropout)
         self.cross_ln_q = RMSNorm(hidden_dim)
         self.cross_ln_k = RMSNorm(hidden_dim)
         
@@ -59,7 +62,8 @@ class PerceiverResampler(nn.Module):
                 d_model=hidden_dim, 
                 nhead=num_heads, 
                 dim_feedforward=hidden_dim*4, 
-                activation='gelu', 
+                dropout=dropout,
+                activation='gelu',
                 batch_first=True,
                 norm_first=True
             ) for _ in range(depth)

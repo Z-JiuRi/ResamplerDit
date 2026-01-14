@@ -16,7 +16,7 @@ def modulate(x, shift, scale):
 
 
 class DiTBlock(nn.Module):
-    def __init__(self, hidden_dim, num_heads, mlp_ratio=4.0):
+    def __init__(self, hidden_dim, num_heads, mlp_ratio=4.0, dropout=0.1):
         super().__init__()
         self.norm1 = nn.LayerNorm(hidden_dim, elementwise_affine=False, eps=1e-6)
         self.attn = nn.MultiheadAttention(hidden_dim, num_heads, batch_first=True)
@@ -28,7 +28,9 @@ class DiTBlock(nn.Module):
         self.mlp = nn.Sequential(
             nn.Linear(hidden_dim, int(hidden_dim * mlp_ratio)),
             nn.GELU(),
-            nn.Linear(int(hidden_dim * mlp_ratio), hidden_dim)
+            nn.Dropout(dropout), # MLP 内部 Dropout
+            nn.Linear(int(hidden_dim * mlp_ratio), hidden_dim),
+            nn.Dropout(dropout)  # MLP 输出 Dropout
         )
         
         # AdaLN: t 调制 Norm1, Norm2, Norm3 (Self-Attn, Cross-Attn, MLP)
@@ -67,7 +69,7 @@ class DiTBlock(nn.Module):
         return x
 
 class DiT(nn.Module):
-    def __init__(self, input_dim=128, hidden_dim=768, depth=12, num_heads=8, max_len=66, mlp_ratio=4.0):
+    def __init__(self, input_dim=128, hidden_dim=768, depth=12, num_heads=8, max_len=66, mlp_ratio=4.0, dropout=0.1):
         super().__init__()
         """
         __init__:
@@ -78,6 +80,7 @@ class DiT(nn.Module):
                 num_heads: 注意力头数 (默认 8)
                 max_len: 最大序列长度 (默认 66)
                 mlp_ratio: MLP 隐藏层维度比例 (默认 4.0)
+                dropout: 0.1
         forward:
             Args:
                 x: 输入的噪声化 Token 序列 (B, seq_len, input_dim)
@@ -107,7 +110,7 @@ class DiT(nn.Module):
         
         # Blocks (Transformer 块)
         self.blocks = nn.ModuleList([
-            DiTBlock(hidden_dim, num_heads, mlp_ratio) for _ in range(depth)
+            DiTBlock(hidden_dim, num_heads, mlp_ratio, dropout) for _ in range(depth)
         ])
         
         # Final Layer (最终输出层)

@@ -45,7 +45,8 @@ class Trainer:
             cond_len=cfg.data.cond_shape[0],
             latent_cond_len=cfg.resampler.latent_cond_len,
             num_heads=cfg.resampler.num_heads,
-            depth=cfg.resampler.depth
+            depth=cfg.resampler.depth,
+            dropout=cfg.resampler.dropout
         ).to(self.device)
         
         self.dit = DiT(
@@ -54,7 +55,8 @@ class Trainer:
             depth=cfg.dit.depth,
             num_heads=cfg.dit.num_heads,
             max_len=cfg.data.max_len,
-            mlp_ratio=cfg.dit.mlp_ratio
+            mlp_ratio=cfg.dit.mlp_ratio,
+            dropout=cfg.resampler.dropout
         ).to(self.device)
         
         self.diffusion = GaussianDiffusion(

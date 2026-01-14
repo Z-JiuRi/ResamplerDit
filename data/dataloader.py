@@ -89,6 +89,55 @@ class LoRADataset(Dataset):
         b_sorted = b[:, idx]
         
         return a_sorted, b_sorted
+    
+    def _canonicalize_lora(a, b):
+        """
+        对 LoRA 矩阵进行规范化对齐（Canonicalization）。
+        解决排列对称性 (Permutation Symmetry) 和符号对称性 (Sign Symmetry)。
+        
+        Args:
+            a: (Rank, Dim_in)  e.g., (2, 64)
+            b: (Dim_out, Rank) e.g., (2048, 2)
+        Returns:
+            a_sorted, b_sorted
+        """
+        # 1. 计算每个 Rank 分量的“能量” (Energy)
+        # 我们可以综合 A 的行范数和 B 的列范数
+        norm_a = torch.norm(a, p=2, dim=1)  # (Rank,)
+        norm_b = torch.norm(b, p=2, dim=0)  # (Rank,)
+        
+        # 使用乘积作为排序依据，代表该 Rank 对最终矩阵 W 的贡献大小
+        energy = norm_a * norm_b 
+        
+        # 2. 按能量降序排列 (解决排列模糊性)
+        sorted_indices = torch.argsort(energy, descending=True)
+        
+        a_sorted = a[sorted_indices]
+        b_sorted = b[:, sorted_indices]
+        
+        # 3. 符号校正 (Sign Flipping) (解决符号模糊性)
+        # 规则：找到 A 中每一行绝对值最大的元素，强制其符号为正
+        # 如果该元素为负，则翻转 A 的该行和 B 的对应列
+        
+        # 找到 A 每一行中绝对值最大值的索引
+        max_abs_idx = torch.argmax(torch.abs(a_sorted), dim=1) # (Rank,)
+        
+        # Gather 取出这些位置的实际数值
+        # a_sorted: (R, D), max_abs_idx: (R,) -> gather 需要 dim=1
+        max_vals = a_sorted.gather(1, max_abs_idx.unsqueeze(1)).squeeze(1) # (Rank,)
+        
+        # 计算翻转系数：如果 max_val < 0 则为 -1，否则为 1
+        signs = torch.sign(max_vals)
+        # 处理 0 的情况，保持为 1
+        signs[signs == 0] = 1.0 
+        
+        # 广播 signs 以便乘法
+        # A: (Rank, Dim_in) * (Rank, 1)
+        a_final = a_sorted * signs.unsqueeze(1)
+        # B: (Dim_out, Rank) * (1, Rank)
+        b_final = b_sorted * signs.unsqueeze(0)
+        
+        return a_final, b_final
 
     def __len__(self):
         return len(self.samples)
@@ -110,6 +159,7 @@ class LoRADataset(Dataset):
             b = torch.load(b_path, map_location='cpu')
             
             # a, b = self._co_sort(a, b)
+            a, b = self._canonicalize_lora(a, b)
             
             stats_a = self.stats[f'a{group}']
             stats_b = self.stats[f'b{group}']

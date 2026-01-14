@@ -18,6 +18,7 @@ resampler:
   hidden_dim: 768      # 内部特征维度 (DiT 和 Resampler 保持一致)
   num_heads: 4
   depth: 4  # Resampler 层数
+  dropout: 0.1
 
 diffusion:
   timesteps: 1000
@@ -33,6 +34,7 @@ dit:
   num_heads: 8
   depth: 12       # DiT 层数
   mlp_ratio: 4.0      # DiT MLP 比例
+  dropout: 0.1
 
 train:
   seed: 3407
