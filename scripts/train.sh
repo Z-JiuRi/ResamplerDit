@@ -8,17 +8,18 @@ export PYTHONPATH=$PYTHONPATH:$(pwd)
 mkdir -p logs
 log_file=logs/train_$(date +%Y%m%d_%H%M%S).log
 
-# # 基础训练命令
+# 基础训练命令
 nohup python main.py \
     mode=train \
     data.device=cuda:0 \
-    diffusion.prediction_type=x \
-    exp_dir=exps/x1 \
-    train.epochs=5000 \
+    diffusion.prediction_type=eps \
+    exp_dir=exps/eps3 \
+    train.epochs=1000 \
+    train.batch_size=64 \
     msg=train流程第一次测试 \
     > $log_file 2>&1 &
 
-tail -f $log_file
+# tail -f $log_file
 
 # # 基础训练命令
 # python main.py \

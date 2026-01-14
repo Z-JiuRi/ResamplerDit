@@ -159,8 +159,8 @@ def get_dataloaders(cfg):
     test_size = len(tot_datasets) - train_size
     train_datasets, test_datasets = random_split(tot_datasets, [train_size, test_size], generator=torch.Generator().manual_seed(cfg.train.seed))    
     
-    train_loader = DataLoader(train_datasets, batch_size=cfg.data.batch_size, shuffle=True, num_workers=cfg.data.num_workers)
-    test_loader = DataLoader(test_datasets, batch_size=cfg.data.batch_size, shuffle=False, num_workers=cfg.data.num_workers)
+    train_loader = DataLoader(train_datasets, batch_size=cfg.train.batch_size, shuffle=True, num_workers=cfg.data.num_workers)
+    test_loader = DataLoader(test_datasets, batch_size=cfg.train.batch_size, shuffle=False, num_workers=cfg.data.num_workers)
     
     return train_loader, test_loader
 

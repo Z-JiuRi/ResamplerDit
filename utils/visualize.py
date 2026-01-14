@@ -123,9 +123,8 @@ def setup_global_fonts():
 
 
 def plot_gaussian(data, filename=None):
-    # 如果传入的是三维数据，只取最后一维
     if data.dim() == 3:
-        data = data[:, :, -1]
+        data = data[0]
     plt.figure(figsize=(10, 5), layout='constrained')
     # 使用seaborn的distplot，自动处理缩放
     sns.histplot(data.detach().cpu().numpy().flatten(), bins=100, alpha=0.5, label='data', kde=False, stat='density')
@@ -144,9 +143,9 @@ def plot_gaussian(data, filename=None):
 def plot_histogram(pre, ori, filename=None):
     # 如果传入的是三维数据，只取最后一维
     if pre.dim() == 3:
-        pre = pre[:, :, -1]
+        pre = pre[0]
     if ori.dim() == 3:
-        ori = ori[:, :, -1]
+        ori = ori[0]
     
     plt.figure(figsize=(10, 5))
     # 使用seaborn绘制原始数据和重建数据的分布
@@ -234,9 +233,9 @@ def plot_asymmetric_violin(pre, ori, labels=None, colors=None, title=None, filen
 def plot_heatmap(pre, ori, filename=None):
     # 如果传入的是三维数据，只取最后一维
     if pre.dim() == 3:
-        pre = pre[:, :, -1]
+        pre = pre[0]
     if ori.dim() == 3:
-        ori = ori[:, :, -1]
+        ori = ori[0]
     fig, axs = plt.subplots(3, 1, figsize=(20, 10))
 
     # 去除中间维度

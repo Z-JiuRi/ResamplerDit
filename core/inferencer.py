@@ -5,32 +5,82 @@ from models.ddpm import GaussianDiffusion
 from models.dit import DiT
 from models.resampler import PerceiverResampler
 
+import torch.nn as nn
+
 class Inferencer:
-    def __init__(self, cfg):
+    def __init__(self, cfg, checkpoint_path=None, use_ema=True):
         self.cfg = cfg
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
-        # Init Models
+        # Init Models (Consistent with Trainer)
         self.resampler = PerceiverResampler(
-            input_dim=cfg.data.svd_dim, embed_dim=cfg.model.embed_dim,
-            latent_len=cfg.model.latent_length, depth=cfg.model.depth_resampler
+            input_dim=cfg.data.cond_shape[1],
+            hidden_dim=cfg.resampler.hidden_dim,
+            cond_len=cfg.data.cond_shape[0],
+            latent_cond_len=cfg.resampler.latent_cond_len,
+            num_heads=cfg.resampler.num_heads,
+            depth=cfg.resampler.depth
         ).to(self.device)
         
         self.dit = DiT(
-            input_dim=cfg.data.token_size, embed_dim=cfg.model.embed_dim,
-            depth=cfg.model.depth_dit
+            input_dim=cfg.data.token_size,
+            hidden_dim=cfg.resampler.hidden_dim,
+            depth=cfg.dit.depth,
+            num_heads=cfg.dit.num_heads,
+            max_len=cfg.data.max_len,
+            mlp_ratio=cfg.dit.mlp_ratio
         ).to(self.device)
         
-        self.diffusion = GaussianDiffusion(self.dit, timesteps=cfg.diffusion.timesteps).to(self.device)
+        self.diffusion = GaussianDiffusion(
+            denoiser=self.dit,
+            timesteps=cfg.diffusion.timesteps,
+            beta_kwargs=cfg.diffusion.betas,
+            prediction_type=cfg.diffusion.prediction_type,
+            snr_gamma=cfg.diffusion.snr_gamma
+        ).to(self.device)
+
+        # Null cond placeholder (if needed for compatibility)
+        self.null_cond = nn.Parameter(torch.zeros(1, cfg.resampler.latent_cond_len, cfg.resampler.hidden_dim, device=self.device))
         
         # Load Weights
         if checkpoint_path is None:
-            checkpoint_path = os.path.join(self.cfg.exp_dir, "checkpoints/best.ckpt")
+            checkpoint_path = os.path.join(self.cfg.exp_dir, "ckpts/best.pth")
+            
+        print(f"Loading checkpoint from {checkpoint_path}")
         ckpt = torch.load(checkpoint_path, map_location=self.device)
-        self.resampler.load_state_dict(ckpt['resampler'])
-        self.dit.load_state_dict(ckpt['dit'])
+        
+        if use_ema and 'ema_shadow' in ckpt:
+            print("Loading EMA weights...")
+            # Reconstruct EMA shadow mapping
+            # Trainer used: 
+            # self.ema = EMA(nn.ModuleDict({'resampler': ..., 'dit': ..., 'null_cond_wrapper': ...}))
+            # Keys in ema_shadow will be like "resampler.latents", "dit.x_embedder.proj.weight"
+            
+            shadow = ckpt['ema_shadow']
+            
+            # Manually apply shadow to models
+            model_dict = {
+                'resampler': self.resampler,
+                'dit': self.dit,
+                'null_cond_wrapper': nn.ParameterList([self.null_cond])
+            }
+            
+            # Helper to load into submodule
+            for module_name, module in model_dict.items():
+                for name, param in module.named_parameters():
+                    full_name = f"{module_name}.{name}"
+                    if full_name in shadow:
+                        param.data.copy_(shadow[full_name].to(self.device))
+                    else:
+                        print(f"Warning: {full_name} not found in EMA shadow")
+        else:
+            print("Loading standard weights...")
+            self.resampler.load_state_dict(ckpt['resampler'])
+            self.dit.load_state_dict(ckpt['dit'])
+            
         self.diffusion.eval()
         self.resampler.eval()
+        self.dit.eval()
         
         # Load Stats
         self.stats = torch.load(cfg.data.stats_path)

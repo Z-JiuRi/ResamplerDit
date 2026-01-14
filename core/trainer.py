@@ -10,7 +10,7 @@ from models.ddpm import GaussianDiffusion
 from models.dit import DiT
 from models.resampler import PerceiverResampler
 from utils.scheduler import get_lr_scheduler
-from utils.tools import seed_everything, setup_logger, create_exp_dirs
+from utils.tools import seed_everything, setup_logger, create_exp_dirs, EMA
 from utils.visualize import setup_global_fonts, plot_gaussian, plot_heatmap, plot_histogram
 from data.dataloader import get_dataloaders
 
@@ -88,6 +88,16 @@ class Trainer:
         self.start_epoch = 1 
         self.step = 0
         
+        # EMA
+        self.ema = EMA(
+            nn.ModuleDict({
+                'resampler': self.resampler,
+                'dit': self.dit,
+                'null_cond_wrapper': nn.ParameterList([self.null_cond])
+            }),
+            decay=cfg.train.get('ema_rate', 0.999)
+        )
+
         # 如果配置中有 resume 路径，可以在这里自动加载
         # if cfg.train.resume_path:
         #     self.load_checkpoint(cfg.train.resume_path)
@@ -104,7 +114,7 @@ class Trainer:
             total_euclidean = 0
             
             pbar = tqdm(self.train_loader, desc=f"[Train] Epoch {epoch}")
-            for batch in pbar:
+            for batch_idx, batch in enumerate(pbar):
                 cond = batch['cond'].to(self.device)
                 cond_mask = batch['cond_mask'].to(self.device)
                 tokens = batch['tokens'].to(self.device)
@@ -118,7 +128,7 @@ class Trainer:
                 else:
                     current_cond = cond_feats
                 
-                if epoch % self.cfg.train.test_interval == 0:
+                if epoch % self.cfg.train.test_interval == 0 and batch_idx == len(self.train_loader) - 1:
                     loss_dict = self.diffusion(tokens, current_cond, layer_ids=layer_ids, matrix_ids=matrix_ids, return_pred=True)
                     pred = loss_dict['pred']
                     target = loss_dict['target']
@@ -135,13 +145,16 @@ class Trainer:
                 # 2. Backpropagation
                 self.optimizer.zero_grad()
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(
-                    list(self.resampler.parameters()) \
-                    + list(self.dit.parameters()) \
-                    + [self.null_cond], 
+                
+                if self.step % 100 == 0:
+                    self._log_gradients()
+
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    list(self.resampler.parameters()) + list(self.dit.parameters()) + [self.null_cond], 
                     self.cfg.train.grad_clip
                 )
                 self.optimizer.step()
+                self.ema.update()
                 self.scheduler.step()
                 
                 total_loss += loss.item()
@@ -154,6 +167,7 @@ class Trainer:
                 self.writer.add_scalar('Train/LR', self.scheduler.get_last_lr()[0], self.step)
                 self.writer.add_scalar('Train/Cos', cos.item(), self.step)
                 self.writer.add_scalar('Train/Euclidean', euclidean.item(), self.step)
+                self.writer.add_scalar('Train/GradNorm', grad_norm, self.step)
                 
                 pbar.set_postfix({
                     'loss': f"{loss.item():.4e}",
@@ -181,6 +195,7 @@ class Trainer:
 
     @torch.no_grad()
     def test(self, epoch):
+        self.ema.apply_shadow()
         self.diffusion.eval()
         self.resampler.eval()
         self.dit.eval()
@@ -188,7 +203,7 @@ class Trainer:
         total_cos = 0
         total_euclidean = 0
         
-        for batch in self.test_loader:
+        for batch_idx, batch in enumerate(self.test_loader):
             cond = batch['cond'].to(self.device)
             cond_mask = batch['cond_mask'].to(self.device)
             tokens = batch['tokens'].to(self.device)
@@ -199,9 +214,10 @@ class Trainer:
             loss_dict = self.diffusion(tokens, cond_feats, layer_ids=layer_ids, matrix_ids=matrix_ids, return_pred=True)
             pred = loss_dict['pred']
             target = loss_dict['target']
-            plot_heatmap(pred, target, self.exp_dir / "results" / "heatmap" / f"[Test]_{epoch}.png")
-            plot_histogram(pred, target, self.exp_dir / "results" / "hist" / f"[Test]_{epoch}.png")
-            plot_gaussian(pred - target, self.exp_dir / "results" / "diff" / f"[Test]_{epoch}.png")
+            if batch_idx == len(self.test_loader) - 1:
+                plot_heatmap(pred, target, self.exp_dir / "results" / "heatmap" / f"[Test]_{epoch}.png")
+                plot_histogram(pred, target, self.exp_dir / "results" / "hist" / f"[Test]_{epoch}.png")
+                plot_gaussian(pred - target, self.exp_dir / "results" / "diff" / f"[Test]_{epoch}.png")
             total_loss += loss_dict['loss'].item()
             total_cos += loss_dict['cos'].item()
             total_euclidean += loss_dict['euclidean'].item()
@@ -214,6 +230,7 @@ class Trainer:
         self.writer.add_scalar('Test/Loss', avg_loss, epoch)
         self.writer.add_scalar('Test/Cos', avg_cos, epoch)
         self.writer.add_scalar('Test/Euclidean', avg_euclidean, epoch)
+        self.ema.restore()
         return avg_loss
 
     def save_checkpoint(self, epoch):
@@ -224,6 +241,7 @@ class Trainer:
             'null_cond': self.null_cond,
             'optimizer': self.optimizer.state_dict(),
             'scheduler': self.scheduler.state_dict(),
+            'ema_shadow': self.ema.shadow,
             'epoch': epoch
         }, path)
         logger.info(f"Saved checkpoint to {path}")
@@ -248,3 +266,14 @@ class Trainer:
             logger.info(f"Loaded checkpoint from {path}, resuming from epoch {self.start_epoch}")
         else:
             logger.info(f"Loaded checkpoint from {path}")
+
+    def _log_gradients(self):
+        for name, param in self.resampler.named_parameters():
+            if param.grad is not None:
+                self.writer.add_histogram(f"Grad/Resampler/{name}", param.grad, self.step)
+        for name, param in self.dit.named_parameters():
+            if param.grad is not None:
+                self.writer.add_histogram(f"Grad/DiT/{name}", param.grad, self.step)
+        if self.null_cond.grad is not None:
+            self.writer.add_histogram("Grad/NullCond", self.null_cond.grad, self.step)
+
