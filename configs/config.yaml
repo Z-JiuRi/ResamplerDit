@@ -1,0 +1,57 @@
+data:
+  data_dir: /home/zxd/zxd/Huawei/datasets/lora/  # 指向你的数据集根目录
+  stats_path: ./data/stats.pth
+  batch_size: 128
+  num_workers: 8
+  train_ratio: 0.9
+  device: cuda:0
+  token_size: 128     # 切分LoRA矩阵的块大小
+  cond_shape: [224, 512]    # 条件序列长度
+  original_shapes: 
+    a1: [2, 64]
+    b1: [2048, 2]
+    a2: [2, 2048]
+    b2: [64, 2]
+  max_len: 66
+
+resampler:
+  latent_cond_len: 64   # Resampler 压缩后的序列长度
+  hidden_dim: 768      # 内部特征维度 (DiT 和 Resampler 保持一致)
+  num_heads: 4
+  depth: 4  # Resampler 层数
+
+diffusion:
+  timesteps: 1000
+  prediction_type: eps # eps, x, v
+  snr_gamma: 5.0      # Min-SNR 权重
+  betas:
+    scheduler_type: linear
+    beta_start: 0.0001
+    beta_end: 0.02
+    s: 0.008
+
+dit:
+  num_heads: 8
+  depth: 12       # DiT 层数
+  mlp_ratio: 4.0      # DiT MLP 比例
+
+train:
+  seed: 3407
+  epochs: 100
+  weight_decay: 1e-4
+  save_interval: 100
+  test_interval: 10
+  grad_clip: 1.0
+  cfg_drop_rate: 0.1
+
+lr_scheduler:
+  type: cosine_warmup
+  max_lr: 5e-4
+  warmup_ratio: 0.1
+  start_lr: 1.0e-5
+  eta_min: 1.0e-5
+
+mode: train
+exp_dir: exps/eps01
+
+msg: "train eps01 first time"
