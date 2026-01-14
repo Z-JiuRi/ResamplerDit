@@ -28,6 +28,7 @@ nohup python main.py \
     train.batch_size=128 \
     train.weight_decay=5e-2 \
     train.cfg_drop_rate=0.5 \
+    \
     msg=中等模型resampler和dit，去掉co-sorting，v预测，cfg_drop_rate=0.5 \
     > $log_file 2>&1 &
 
