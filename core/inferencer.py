@@ -1,18 +1,20 @@
 import torch
+import torch.nn as nn
 import os
 import numpy as np
 from models.ddpm import GaussianDiffusion
 from models.dit import DiT
 from models.resampler import PerceiverResampler
 
-import torch.nn as nn
-
 class Inferencer:
-    def __init__(self, cfg, checkpoint_path=None, use_ema=True):
+    def __init__(self, cfg):
         self.cfg = cfg
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device(cfg.data.device)
+        self.use_ema = cfg.inference.use_ema
+        self.checkpoint_path = cfg.inference.checkpoint_path
+        self.cond_path = cfg.inference.cond_path
         
-        # Init Models (Consistent with Trainer)
+        # 1. 初始化模型结构 (与 Trainer 保持一致)
         self.resampler = PerceiverResampler(
             input_dim=cfg.data.cond_shape[1],
             hidden_dim=cfg.resampler.hidden_dim,
@@ -39,33 +41,25 @@ class Inferencer:
             snr_gamma=cfg.diffusion.snr_gamma
         ).to(self.device)
 
-        # Null cond placeholder (if needed for compatibility)
+        # Null cond placeholder
         self.null_cond = nn.Parameter(torch.zeros(1, cfg.resampler.latent_cond_len, cfg.resampler.hidden_dim, device=self.device))
         
-        # Load Weights
-        if checkpoint_path is None:
-            checkpoint_path = os.path.join(self.cfg.exp_dir, "ckpts/best.pth")
-            
-        print(f"Loading checkpoint from {checkpoint_path}")
-        ckpt = torch.load(checkpoint_path, map_location=self.device)
+        if not os.path.exists(self.checkpoint_path):
+             raise FileNotFoundError(f"Checkpoint not found at {self.checkpoint_path}")
+
+        print(f"Loading checkpoint from {self.checkpoint_path}")
+        ckpt = torch.load(self.checkpoint_path, map_location=self.device)
         
-        if use_ema and 'ema_shadow' in ckpt:
+        # 处理 EMA 权重加载
+        if self.use_ema and 'ema_shadow' in ckpt:
             print("Loading EMA weights...")
-            # Reconstruct EMA shadow mapping
-            # Trainer used: 
-            # self.ema = EMA(nn.ModuleDict({'resampler': ..., 'dit': ..., 'null_cond_wrapper': ...}))
-            # Keys in ema_shadow will be like "resampler.latents", "dit.x_embedder.proj.weight"
-            
             shadow = ckpt['ema_shadow']
-            
-            # Manually apply shadow to models
             model_dict = {
                 'resampler': self.resampler,
                 'dit': self.dit,
                 'null_cond_wrapper': nn.ParameterList([self.null_cond])
             }
             
-            # Helper to load into submodule
             for module_name, module in model_dict.items():
                 for name, param in module.named_parameters():
                     full_name = f"{module_name}.{name}"
@@ -77,86 +71,155 @@ class Inferencer:
             print("Loading standard weights...")
             self.resampler.load_state_dict(ckpt['resampler'])
             self.dit.load_state_dict(ckpt['dit'])
+            # 兼容性处理：防止旧模型没有 null_cond
+            if 'null_cond' in ckpt:
+                self.null_cond.data = ckpt['null_cond'].data.to(self.device)
             
         self.diffusion.eval()
         self.resampler.eval()
         self.dit.eval()
         
-        # Load Stats
-        self.stats = torch.load(cfg.data.stats_path)
+        # 3. 加载统计量 (用于反归一化)
+        if not os.path.exists(cfg.data.stats_path):
+             raise FileNotFoundError(f"Stats file not found at {cfg.data.stats_path}")
+        self.stats = torch.load(cfg.data.stats_path, map_location='cpu')
         
-        # Precompute IDs (Assume standard shape for all generations)
-        # 这里需要根据 token 数量重新生成一次 IDs，逻辑与 DataLoader 相同
-        # 为简化，可以在初始化时硬编码这些 IDs (因为生成长度固定为 66)
-        self.num_tokens = 66 
-        self.layer_ids, self.matrix_ids = self._make_fixed_ids()
+        # 4. 预计算 IDs
+        self.matrix_configs = [
+            {'name': 'a1', 'shape': tuple(cfg.data.original_shapes.a1), 'layer_id': 0, 'matrix_id': 0},
+            {'name': 'b1', 'shape': tuple(cfg.data.original_shapes.b1), 'layer_id': 0, 'matrix_id': 1},
+            {'name': 'a2', 'shape': tuple(cfg.data.original_shapes.a2), 'layer_id': 1, 'matrix_id': 0},
+            {'name': 'b2', 'shape': tuple(cfg.data.original_shapes.b2), 'layer_id': 1, 'matrix_id': 1},
+        ]
+        self.token_size = cfg.data.token_size
+        self.layer_ids, self.matrix_ids, self.num_tokens = self._make_fixed_ids()
+        
+        print(f"Inferencer initialized. Total generation tokens: {self.num_tokens}")
 
     def _make_fixed_ids(self):
-        # 需复用 DataLoader 中的逻辑生成 (66,) 的 tensor
-        # 这里略写，实际代码请复制 DataLoader 中的 process_mat 逻辑生成一次即可
-        pass 
+        """
+        构建固定的 layer_ids 和 matrix_ids，逻辑与 DataLoader 完全一致
+        """
+        layer_ids_list = []
+        matrix_ids_list = []
+        
+        total_tokens = 0
+        
+        # 按顺序遍历矩阵 (A1, B1, A2, B2)
+        for config in self.matrix_configs:
+            rows, cols = config['shape']
+            num_elements = rows * cols
+            
+            if num_elements % self.token_size != 0:
+                raise ValueError(f"Matrix {config['name']} size {num_elements} not divisible by token_size {self.token_size}")
+            
+            num_chunks = num_elements // self.token_size
+            total_tokens += num_chunks
+            
+            # 生成对应的 ID
+            # shape: (num_chunks,)
+            l_ids = torch.full((num_chunks,), config['layer_id'], dtype=torch.long)
+            m_ids = torch.full((num_chunks,), config['matrix_id'], dtype=torch.long)
+            
+            layer_ids_list.append(l_ids)
+            matrix_ids_list.append(m_ids)
+            
+        # 拼接
+        layer_ids = torch.cat(layer_ids_list)
+        matrix_ids = torch.cat(matrix_ids_list)
+        
+        return layer_ids, matrix_ids, total_tokens
 
     @torch.no_grad()
-    def inference(self, cond_tensor, cond_mask=None):
+    def inference(self):
         """
-        cond_tensor: (1, 224, 512)
+        执行推理
+        Args:
+            cond_tensor: 原始条件 Tensor (Batch=1, 224, 512)
+            cond_mask: 条件 Mask (可选)
+            cfg_scale: Classifier-Free Guidance 比例 (推荐 > 1.0)
+        Returns:
+            result_dict: 包含 'a1', 'b1', 'a2', 'b2' 真实参数矩阵的字典
         """
-        cond_tensor = cond_tensor.to(self.device)
-        if cond_mask is not None:
-            cond_mask = cond_mask.to(self.device)
-            
-        # 1. Condition
-        cond_feats = self.resampler(cond_tensor, cond_mask)
+        self.resampler.eval()
+        self.dit.eval()
         
-        # 2. Sample
-        shape = (1, self.num_tokens, self.cfg.data.token_size)
-        # 构造 kwargs
-        # 需要传入 layer_ids 等
-        # ids = self.layer_ids.to(self.device).unsqueeze(0) ...
+        cond_tensor = torch.load(self.cond_path, map_location=self.device)['cond'].unsqueeze(0)
+        cond_mask = torch.load(self.cond_path, map_location=self.device)['mask'].unsqueeze(0)
+
+        # 1. 通过 Resampler 获取条件特征
+        cond_feats = self.resampler(cond_tensor, cond_mask) # (1, 64, hidden_dim)
         
+        # 2. 准备 Unconditional Condition (用于 CFG)
+        # null_cond 是 (1, 64, hidden_dim)，需要 expand 到 batch size
+        uncond_cond = self.null_cond.expand(cond_feats.shape[0], -1, -1)
+        
+        # 3. 准备采样所需的 IDs
+        # 扩展到 Batch 维度 (Batch, seq_len)
+        batch_size = cond_tensor.shape[0]
+        layer_ids = self.layer_ids.unsqueeze(0).repeat(batch_size, 1).to(self.device)
+        matrix_ids = self.matrix_ids.unsqueeze(0).repeat(batch_size, 1).to(self.device)
+        
+        # 目标形状 (Batch, num_tokens, token_size)
+        shape = (batch_size, self.num_tokens, self.token_size)
+        
+        # 4. 执行扩散采样
+        # 注意：这里调用的是 self.diffusion.sample，它会处理 p_sample_loop 或 ddim_sample
         samples = self.diffusion.sample(
             cond=cond_feats,
             shape=shape,
-            layer_ids=self.layer_ids.to(self.device).unsqueeze(0),
-            matrix_ids=self.matrix_ids.to(self.device).unsqueeze(0),
-            target_mask=None # 生成时不 mask
-        )
+            use_ddim=self.cfg.inference.use_ddim,
+            ddim_steps=self.cfg.inference.ddim_steps,
+            eta=self.cfg.inference.eta,
+            layer_ids=layer_ids,
+            matrix_ids=matrix_ids,
+            cfg_scale=self.cfg.inference.cfg_scale,
+            uncond_cond=uncond_cond
+        ) # -> (Batch, num_tokens, token_size)
         
-        # 3. Reconstruct
-        # samples: (1, 66, 128) -> flatten -> split -> un-norm -> reshape
-        return self._reconstruct_matrices(samples[0])
+        # 5. 重建并反归一化矩阵
+        # 目前只处理 Batch 中的第一个样本
+        output_path = os.path.join(self.cfg.inference.output_dir, os.path.basename(self.cond_path))
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        torch.save(self._reconstruct_matrices(samples[0]), output_path)
+        print(f"Output saved to {output_path}")
 
     def _reconstruct_matrices(self, flat_tokens):
-        # 逆操作：
-        # 1. Flatten all tokens -> (8448,)
-        flat = flat_tokens.flatten()
+        """
+        将生成的 Token 序列还原为矩阵字典，并执行反归一化
+        Args:
+            flat_tokens: (num_tokens, token_size)
+        """
+        # 1. 展平所有 Token -> (total_elements,)
+        flat_data = flat_tokens.flatten()
         
-        # 2. Slice & Reshape & Un-norm
         results = {}
         ptr = 0
         
-        # Configs (Hardcoded for clarity based on your problem)
-        shapes = [
-            ('a1', (2, 64)), ('b1', (2048, 2)), 
-            ('a2', (2, 2048)), ('b2', (64, 2))
-        ]
-        
-        for name, shape in shapes:
-            size = shape[0] * shape[1]
-            data = flat[ptr : ptr + size].reshape(shape)
-            ptr += size
-            # Pad align skip (token alignment)
-            # 在 DataLoader 里我们是按矩阵独立 Padding 的，所以这里也要处理
-            # 实际上：需要复用 DataLoader 的 token 分割逻辑来反推 ptr 跳跃
-            # 简易方案：每个矩阵占用的 chunks 数是固定的
-            # a1: 128 / 128 = 1 chunk
-            # b1: 4096 / 128 = 32 chunks
-            # ...
-            # 所以直接按 chunk 取即可
+        # 按顺序切分 (A1, B1, A2, B2)
+        for config in self.matrix_configs:
+            name = config['name']
+            rows, cols = config['shape']
+            num_elements = rows * cols
             
-            # Un-normalize
-            s = self.stats[name]
-            data = data * s['std'] + s['mean']
-            results[name] = data
+            # 切片
+            matrix_flat = flat_data[ptr : ptr + num_elements]
+            ptr += num_elements
+            
+            # Reshape 回原始形状
+            matrix_data = matrix_flat.reshape(rows, cols)
+            
+            # 反归一化 (Inverse Z-Score)
+            # data = (z * std) + mean
+            if name in self.stats:
+                stat = self.stats[name]
+                mean = stat['mean']
+                std = stat['std']
+                matrix_data = matrix_data * std + mean
+            else:
+                print(f"Warning: Stats for {name} not found, skipping denormalization.")
+            
+            # 转回 CPU numpy 或保持 Tensor
+            results[name] = matrix_data.cpu()
             
         return results

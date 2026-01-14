@@ -83,6 +83,13 @@ class Trainer:
                 'start_lr': cfg.lr_scheduler.start_lr,
                 'eta_min': cfg.lr_scheduler.eta_min
             }
+        elif cfg.lr_scheduler.type == 'cosine_warm_restart':
+            kwargs = {
+                'scheduler_type': cfg.lr_scheduler.type,
+                'T_0': 1000 * len(self.train_loader),
+                'T_mult': cfg.lr_scheduler.T_mult,
+                'eta_min': 1e-5
+            }
         self.scheduler = get_lr_scheduler(self.optimizer, **kwargs)
         
         self.start_epoch = 1 

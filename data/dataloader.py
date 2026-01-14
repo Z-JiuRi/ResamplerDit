@@ -109,7 +109,7 @@ class LoRADataset(Dataset):
             a = torch.load(a_path, map_location='cpu')
             b = torch.load(b_path, map_location='cpu')
             
-            a, b = self._co_sort(a, b)
+            # a, b = self._co_sort(a, b)
             
             stats_a = self.stats[f'a{group}']
             stats_b = self.stats[f'b{group}']
@@ -157,7 +157,9 @@ def get_dataloaders(cfg):
     
     train_size = int(cfg.data.train_ratio * len(tot_datasets))
     test_size = len(tot_datasets) - train_size
-    train_datasets, test_datasets = random_split(tot_datasets, [train_size, test_size], generator=torch.Generator().manual_seed(cfg.train.seed))    
+    # 按顺序划分训练集和测试集，不要随机
+    train_datasets = torch.utils.data.Subset(tot_datasets, range(train_size))
+    test_datasets = torch.utils.data.Subset(tot_datasets, range(train_size, len(tot_datasets)))
     
     train_loader = DataLoader(train_datasets, batch_size=cfg.train.batch_size, shuffle=True, num_workers=cfg.data.num_workers)
     test_loader = DataLoader(test_datasets, batch_size=cfg.train.batch_size, shuffle=False, num_workers=cfg.data.num_workers)

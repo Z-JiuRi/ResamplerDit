@@ -52,6 +52,13 @@ lr_scheduler:
   start_lr: 1.0e-5
   eta_min: 1.0e-5
 
+inference:
+  use_ema: true
+  checkpoint_path: exps/eps6/ckpts/best.pth
+  cond_path: /home/zxd/zxd/Huawei/datasets/lora/conditions/seed5/01105.pth
+  cfg_scale: 7.5
+  output_dir: exps/eps6/inference
+
 mode: train
 exp_dir: exps/eps01
 
