@@ -46,6 +46,7 @@ train:
   grad_clip: 1.0
   cfg_drop_rate: 0.1
   ema_rate: 0.999
+  cond_noise_factor: 0.01
 
 lr_scheduler:
   type: cosine_warmup
@@ -56,6 +57,7 @@ lr_scheduler:
 
 inference:
   use_ema: true
+  config: exps/eps12/logs/config.yaml
   checkpoint_path: exps/eps6/ckpts/best.pth
   cond_path: /home/zxd/zxd/Huawei/datasets/lora/conditions/seed5/01105.pth
   cfg_scale: 7.5

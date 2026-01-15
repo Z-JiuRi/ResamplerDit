@@ -20,15 +20,21 @@ class LoRADataset(Dataset):
         
         # 1. 索引所有文件
         self.samples = []
+        # 确保目录存在
+        if not self.cond_dir.exists():
+            raise FileNotFoundError(f"Conditions dir not found: {self.cond_dir}")
+
         self.seeds = sorted(p.name for p in self.cond_dir.iterdir())
          
         for seed in self.seeds:
             c_path = self.cond_dir / seed
             p_path = self.param_dir / seed
             if not c_path.exists(): 
-                raise FileNotFoundError(f"Condition path not found: {c_path}")
+                logger.warning(f"Condition path not found skipping: {c_path}")
+                continue
             if not p_path.exists(): 
-                raise FileNotFoundError(f"Param path not found: {p_path}")
+                logger.warning(f"Param path not found skipping: {p_path}")
+                continue
             
             files = sorted([p for p in c_path.iterdir() if p.name.endswith('.pth')])
             for f in files:
@@ -43,24 +49,78 @@ class LoRADataset(Dataset):
         # 2. 加载或计算统计量
         self.stats = self._prepare_statistics()
         
+    def _canonicalize_lora(self, a, b):
+        """
+        对 LoRA 矩阵进行规范化对齐（Canonicalization）。
+        解决排列对称性 (Permutation Symmetry) 和符号对称性 (Sign Symmetry)。
+        Args:
+            a: (Rank, Dim_in)  e.g., (2, 64)
+            b: (Dim_out, Rank) e.g., (2048, 2)
+        Returns:
+            a_sorted, b_sorted
+        """
+        # 1. 计算每个 Rank 分量的“能量” (Energy)
+        norm_a = torch.norm(a, p=2, dim=1)  # (Rank,)
+        norm_b = torch.norm(b, p=2, dim=0)  # (Rank,)
+        
+        # 使用乘积作为排序依据
+        energy = norm_a * norm_b 
+        
+        # 2. 按能量降序排列 (解决排列模糊性)
+        sorted_indices = torch.argsort(energy, descending=True)
+        
+        a_sorted = a[sorted_indices]
+        b_sorted = b[:, sorted_indices]
+        
+        # 3. 符号校正 (Sign Flipping) (解决符号模糊性)
+        # 找到 A 每一行中绝对值最大值的索引
+        max_abs_idx = torch.argmax(torch.abs(a_sorted), dim=1) # (Rank,)
+        
+        # Gather 取出这些位置的实际数值
+        max_vals = a_sorted.gather(1, max_abs_idx.unsqueeze(1)).squeeze(1) # (Rank,)
+        
+        # 计算翻转系数
+        signs = torch.sign(max_vals)
+        signs[signs == 0] = 1.0 
+        
+        # 广播 signs 以便乘法
+        a_final = a_sorted * signs.unsqueeze(1)
+        b_final = b_sorted * signs.unsqueeze(0)
+        
+        return a_final, b_final
+
     def _prepare_statistics(self):
         if self.stats_path.exists():
             logger.info(f"Loaded stats from {self.stats_path}")
             return torch.load(self.stats_path, map_location='cpu')
         
-        logger.info("Calculating global statistics...")
-        # 用于累积 sum 和 sq_sum
+        logger.info("Calculating global statistics (with Canonicalization & Transpose)...")
         sums = {'a1': 0., 'b1': 0., 'a2': 0., 'b2': 0.}
         sq_sums = {'a1': 0., 'b1': 0., 'a2': 0., 'b2': 0.}
         counts = {'a1': 0, 'b1': 0, 'a2': 0, 'b2': 0}
         
         for item in tqdm(self.samples):
-            for suffix in ['a1', 'b1', 'a2', 'b2']:
-                p_path = Path(item['param_path']) / f"{item['data_id']}_{suffix}.pth"
-                val = torch.load(p_path, map_location='cpu')
-                sums[suffix] += val.sum().item()
-                sq_sums[suffix] += (val ** 2).sum().item()
-                counts[suffix] += val.numel()
+            # 加载原始参数
+            p_path = Path(item['param_path'])
+            a1 = torch.load(p_path / f"{item['data_id']}_a1.pth", map_location='cpu')
+            b1 = torch.load(p_path / f"{item['data_id']}_b1.pth", map_location='cpu')
+            a2 = torch.load(p_path / f"{item['data_id']}_a2.pth", map_location='cpu')
+            b2 = torch.load(p_path / f"{item['data_id']}_b2.pth", map_location='cpu')
+
+            # 1. 规范化对齐
+            a1, b1 = self._canonicalize_lora(a1, b1)
+            a2, b2 = self._canonicalize_lora(a2, b2)
+
+            # 2. 转置 B 矩阵 [Dim_out, Rank] -> [Rank, Dim_out]
+            # 这样 flatten 后才是按 Rank 分组的
+            b1 = b1.T
+            b2 = b2.T
+
+            # 统计
+            for name, val in [('a1', a1), ('b1', b1), ('a2', a2), ('b2', b2)]:
+                sums[name] += val.sum().item()
+                sq_sums[name] += (val ** 2).sum().item()
+                counts[name] += val.numel()
         
         stats = {}
         for k in sums.keys():
@@ -72,73 +132,7 @@ class LoRADataset(Dataset):
         torch.save(stats, self.stats_path)
         logger.info(f"Saved stats to {self.stats_path}")
         return stats
-
-    def _co_sort(self, a, b):
-        """
-        Co-sorting: A(r, dim), B(dim, r)
-        Rank = a.shape[0] (e.g., 2)
-        """
-        # 计算 A 每一行的 L2 范数
-        norms = torch.norm(a, p=2, dim=1)
-        # 降序排列索引
-        idx = torch.argsort(norms, descending=True)
-        
-        # 重排 A 的行
-        a_sorted = a[idx]
-        # 重排 B 的列 (对应 A 的行)
-        b_sorted = b[:, idx]
-        
-        return a_sorted, b_sorted
     
-    def _canonicalize_lora(a, b):
-        """
-        对 LoRA 矩阵进行规范化对齐（Canonicalization）。
-        解决排列对称性 (Permutation Symmetry) 和符号对称性 (Sign Symmetry)。
-        
-        Args:
-            a: (Rank, Dim_in)  e.g., (2, 64)
-            b: (Dim_out, Rank) e.g., (2048, 2)
-        Returns:
-            a_sorted, b_sorted
-        """
-        # 1. 计算每个 Rank 分量的“能量” (Energy)
-        # 我们可以综合 A 的行范数和 B 的列范数
-        norm_a = torch.norm(a, p=2, dim=1)  # (Rank,)
-        norm_b = torch.norm(b, p=2, dim=0)  # (Rank,)
-        
-        # 使用乘积作为排序依据，代表该 Rank 对最终矩阵 W 的贡献大小
-        energy = norm_a * norm_b 
-        
-        # 2. 按能量降序排列 (解决排列模糊性)
-        sorted_indices = torch.argsort(energy, descending=True)
-        
-        a_sorted = a[sorted_indices]
-        b_sorted = b[:, sorted_indices]
-        
-        # 3. 符号校正 (Sign Flipping) (解决符号模糊性)
-        # 规则：找到 A 中每一行绝对值最大的元素，强制其符号为正
-        # 如果该元素为负，则翻转 A 的该行和 B 的对应列
-        
-        # 找到 A 每一行中绝对值最大值的索引
-        max_abs_idx = torch.argmax(torch.abs(a_sorted), dim=1) # (Rank,)
-        
-        # Gather 取出这些位置的实际数值
-        # a_sorted: (R, D), max_abs_idx: (R,) -> gather 需要 dim=1
-        max_vals = a_sorted.gather(1, max_abs_idx.unsqueeze(1)).squeeze(1) # (Rank,)
-        
-        # 计算翻转系数：如果 max_val < 0 则为 -1，否则为 1
-        signs = torch.sign(max_vals)
-        # 处理 0 的情况，保持为 1
-        signs[signs == 0] = 1.0 
-        
-        # 广播 signs 以便乘法
-        # A: (Rank, Dim_in) * (Rank, 1)
-        a_final = a_sorted * signs.unsqueeze(1)
-        # B: (Dim_out, Rank) * (1, Rank)
-        b_final = b_sorted * signs.unsqueeze(0)
-        
-        return a_final, b_final
-
     def __len__(self):
         return len(self.samples)
 
@@ -152,22 +146,32 @@ class LoRADataset(Dataset):
         
         # --- 2. Load Params & Co-sorting ---
         params = {}
-        for group in ['1', '2']:
-            a_path = Path(item['param_path']) / f"{item['data_id']}_a{group}.pth"
-            b_path = Path(item['param_path']) / f"{item['data_id']}_b{group}.pth"
-            a = torch.load(a_path, map_location='cpu')
-            b = torch.load(b_path, map_location='cpu')
-            
-            # a, b = self._co_sort(a, b)
-            a, b = self._canonicalize_lora(a, b)
-            
-            stats_a = self.stats[f'a{group}']
-            stats_b = self.stats[f'b{group}']
+        
+        # 分别加载两组 LoRA
+        a1 = torch.load(Path(item['param_path']) / f"{item['data_id']}_a1.pth", map_location='cpu')
+        b1 = torch.load(Path(item['param_path']) / f"{item['data_id']}_b1.pth", map_location='cpu')
+        a2 = torch.load(Path(item['param_path']) / f"{item['data_id']}_a2.pth", map_location='cpu')
+        b2 = torch.load(Path(item['param_path']) / f"{item['data_id']}_b2.pth", map_location='cpu')
+
+        # 1. 规范化 (Canonicalize)
+        a1, b1 = self._canonicalize_lora(a1, b1)
+        a2, b2 = self._canonicalize_lora(a2, b2)
+
+        # 2. 转置 B 矩阵 (Transpose B)
+        # B: [2048, 2] -> [2, 2048]
+        b1 = b1.T 
+        b2 = b2.T
+
+        # 3. Z-Score 归一化 (使用基于转置数据的统计量)
+        def process_group_data(a, b, suffix):
+            stats_a = self.stats[f'a{suffix}']
+            stats_b = self.stats[f'b{suffix}']
             a = zscore(a, stats_a['mean'], stats_a['std'])
             b = zscore(b, stats_b['mean'], stats_b['std'])
-            
-            params[f'a{group}'] = a
-            params[f'b{group}'] = b
+            return a, b
+
+        params['a1'], params['b1'] = process_group_data(a1, b1, '1')
+        params['a2'], params['b2'] = process_group_data(a2, b2, '2')
         
         # --- 3. Flatten & Tokenize ---
         # 顺序: A1, B1, A2, B2
@@ -177,6 +181,7 @@ class LoRADataset(Dataset):
         
         def process_mat(mat, layer_id, matrix_id):
             flat = mat.flatten() # (N,)
+            # 这里 flat 的顺序已经是 [Rank0_row, Rank1_row...]
             if flat.size(0) % self.token_size != 0:
                 raise ValueError(f"Matrix size {flat.size(0)} not divisible by token_size {self.token_size}")
             
@@ -205,68 +210,21 @@ class LoRADataset(Dataset):
 def get_dataloaders(cfg):
     tot_datasets = LoRADataset(cfg.data.data_dir, cfg.data.stats_path, cfg.data.token_size)
     
-    train_size = int(cfg.data.train_ratio * len(tot_datasets))
-    test_size = len(tot_datasets) - train_size
-    # 按顺序划分训练集和测试集，不要随机
-    train_datasets = torch.utils.data.Subset(tot_datasets, range(train_size))
-    test_datasets = torch.utils.data.Subset(tot_datasets, range(train_size, len(tot_datasets)))
+    tot_size = len(tot_datasets)
+    train_size = int(cfg.data.train_ratio * tot_size)
+    test_size  = tot_size - train_size
+    
+    # 按顺序划分
+    # train_datasets = torch.utils.data.Subset(tot_datasets, range(train_size))
+    # test_datasets = torch.utils.data.Subset(tot_datasets, range(train_size, len(tot_datasets)))
+    
+    train_datasets, test_datasets = random_split(
+        tot_datasets, 
+        [train_size, test_size],
+        generator=torch.Generator().manual_seed(cfg.train.seed) 
+    )
     
     train_loader = DataLoader(train_datasets, batch_size=cfg.train.batch_size, shuffle=True, num_workers=cfg.data.num_workers)
     test_loader = DataLoader(test_datasets, batch_size=cfg.train.batch_size, shuffle=False, num_workers=cfg.data.num_workers)
     
     return train_loader, test_loader
-
-
-# # 测试
-# if __name__ == '__main__':
-#     from matplotlib import pyplot as plt
-#     def plot_single_heatmap(data, filename=None):
-#         plt.figure(figsize=(10, 5))
-#         im = plt.imshow(data, aspect='auto', cmap='seismic', 
-#                         vmin=-data.abs().max(), vmax=data.abs().max())
-#         plt.colorbar(im)
-#         plt.title('Single Heatmap')
-#         plt.tight_layout()
-#         if filename:
-#             plt.savefig(filename)
-#         plt.close()
-    
-#     data_dir = '/home/zxd/zxd/Huawei/datasets/lora'
-#     stats_path = './stats.pth'
-#     token_size = 128
-#     batch_size = 32
-#     num_workers = 8
-#     train_ratio = 0.9
-#     seed = 42
-    
-#     train_loader, test_loader = get_dataloader(data_dir, stats_path, token_size, batch_size, num_workers, train_ratio, seed)
-    
-#     print(f"Train dataset size: {len(train_loader.dataset)}")
-#     print(f"Test dataset size: {len(test_loader.dataset)}")
-    
-#     # 检查一个批次的数据
-#     for batch in train_loader:
-#         print(f"cond shape: {batch['cond'].shape}")      # 应该是 (32, 224, 512)
-#         print(batch['cond'])
-#         plot_single_heatmap(batch['cond'][0].T, 'cond_heatmap.png')
-#         ##################################################
-#         print(f"cond_mask shape: {batch['cond_mask'].shape}") # 应该是 (32, 224)
-#         print(batch['cond_mask'])
-#         plot_single_heatmap(batch['cond_mask'], 'cond_mask_heatmap.png')
-#         ##################################################
-#         print(f"tokens shape: {batch['tokens'].shape}, \
-#             mean: {batch['tokens'].mean()}, \
-#             std: {batch['tokens'].std()}, \
-#             max: {batch['tokens'].max()}, \
-#             min: {batch['tokens'].min()}")    # 应该是 (32, 66, 128)
-#         print(batch['tokens'])
-#         plot_single_heatmap(batch['tokens'][0], 'tokens_heatmap.png')
-#         ##################################################
-#         print(f"layer_ids shape: {batch['layer_ids'].shape}") # 应该是 (32, 66)
-#         print(batch['layer_ids'])
-#         plot_single_heatmap(batch['layer_ids'], 'layer_ids_heatmap.png')
-#         ##################################################
-#         print(f"matrix_ids shape: {batch['matrix_ids'].shape}")# 应该是 (32, 66)
-#         print(batch['matrix_ids'])
-#         plot_single_heatmap(batch['matrix_ids'], 'matrix_ids_heatmap.png')
-#         break

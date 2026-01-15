@@ -5,14 +5,18 @@ import numpy as np
 from models.ddpm import GaussianDiffusion
 from models.dit import DiT
 from models.resampler import PerceiverResampler
+from utils.tools import load_config, seed_everything
 
 class Inferencer:
     def __init__(self, cfg):
-        self.cfg = cfg
+        self.cfg = load_config(cfg.inference.config)
+        cfg = self.cfg
         self.device = torch.device(cfg.data.device)
         self.use_ema = cfg.inference.use_ema
         self.checkpoint_path = cfg.inference.checkpoint_path
         self.cond_path = cfg.inference.cond_path
+        
+        seed_everything(cfg.inference.seed)
         
         # 1. 初始化模型结构 (与 Trainer 保持一致)
         self.resampler = PerceiverResampler(
@@ -199,27 +203,33 @@ class Inferencer:
         # 按顺序切分 (A1, B1, A2, B2)
         for config in self.matrix_configs:
             name = config['name']
-            rows, cols = config['shape']
+            rows, cols = config['shape'] # 这里读到的是原始形状，比如 B1: (2048, 2)
             num_elements = rows * cols
             
             # 切片
             matrix_flat = flat_data[ptr : ptr + num_elements]
             ptr += num_elements
             
-            # Reshape 回原始形状
-            matrix_data = matrix_flat.reshape(rows, cols)
+            if 'b' in name: # 针对 B 矩阵 (b1, b2)
+                # 1. 它是以 (Rank, Dim) 的顺序被 Flatten 的，也就是 (cols, rows)
+                #    所以要先 Reshape 成转置后的形状
+                matrix_data = matrix_flat.reshape(cols, rows) 
+                
+                # 2. 反归一化 (在转置状态下进行，因为 Stats 是基于转置计算的)
+                if name in self.stats:
+                    stat = self.stats[name]
+                    matrix_data = matrix_data * stat['std'] + stat['mean']
+                
+                # 3. 最后转置回原始形状 (2048, 2)
+                matrix_data = matrix_data.T
+                
+            else: # 针对 A 矩阵 (a1, a2)，它们本来就是 (Rank, Dim)，无需特殊处理
+                matrix_data = matrix_flat.reshape(rows, cols)
+                
+                if name in self.stats:
+                    stat = self.stats[name]
+                    matrix_data = matrix_data * stat['std'] + stat['mean']
             
-            # 反归一化 (Inverse Z-Score)
-            # data = (z * std) + mean
-            if name in self.stats:
-                stat = self.stats[name]
-                mean = stat['mean']
-                std = stat['std']
-                matrix_data = matrix_data * std + mean
-            else:
-                print(f"Warning: Stats for {name} not found, skipping denormalization.")
-            
-            # 转回 CPU numpy 或保持 Tensor
             results[name] = matrix_data.cpu()
             
         return results

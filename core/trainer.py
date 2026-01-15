@@ -64,7 +64,8 @@ class Trainer:
             timesteps=cfg.diffusion.timesteps,
             beta_kwargs=cfg.diffusion.betas,
             prediction_type=cfg.diffusion.prediction_type,
-            snr_gamma=cfg.diffusion.snr_gamma
+            snr_gamma=cfg.diffusion.snr_gamma,
+            small_weight=cfg.diffusion.small_weight
         ).to(self.device)
         
         self.null_cond = nn.Parameter(torch.zeros(1, cfg.resampler.latent_cond_len, cfg.resampler.hidden_dim, device=self.device), requires_grad=True)
@@ -131,6 +132,7 @@ class Trainer:
                 matrix_ids = batch['matrix_ids'].to(self.device)
                 
                 cond_feats = self.resampler(cond, cond_mask)
+                cond_feats = cond_feats + torch.randn_like(cond_feats) * self.cfg.train.cond_noise_factor
                 if self.cfg.train.cfg_drop_rate > 0 and torch.rand(1).item() < self.cfg.train.cfg_drop_rate:
                     # 替换为 Null Condition (Broadcast 到 batch size)
                     current_cond = self.null_cond.expand(cond_feats.shape[0], -1, -1)

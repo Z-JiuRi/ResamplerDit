@@ -66,6 +66,7 @@ class GaussianDiffusion(nn.Module):
         beta_kwargs: Dict[str, Any] = {},
         prediction_type: str = "eps",
         snr_gamma: Optional[float] = None,
+        small_weight: float = 0.5,
     ):
         """
         高斯扩散模型，支持三种预测类型:
@@ -80,6 +81,7 @@ class GaussianDiffusion(nn.Module):
                 beta_kwargs: beta 调度器参数
                 prediction_type: 预测类型，'eps', 'x', 'v'
                 snr_gamma: Min-SNR 权重截断阈值，None表示不启用，推荐设置为 5.0
+                small_weight: 小样本权重，默认0.5
         forward:
             Args:
                 x_0: 原始数据       (batch_size, token_size, token_len)
@@ -97,6 +99,7 @@ class GaussianDiffusion(nn.Module):
         self.timesteps = timesteps
         self.prediction_type = prediction_type
         self.snr_gamma = snr_gamma
+        self.small_weight = small_weight
 
         # 计算扩散参数
         betas = get_beta_scheduler(timesteps, **beta_kwargs)
@@ -334,7 +337,7 @@ class GaussianDiffusion(nn.Module):
         """
         if noise is None:
             noise = torch.randn_like(x_0)
-            
+
         x_t = self.q_sample(x_0, t, noise)
         denoiser_output = self.denoiser(x_t, t, cond, layer_ids=layer_ids, matrix_ids=matrix_ids)
         
@@ -347,7 +350,34 @@ class GaussianDiffusion(nn.Module):
         else:
             raise ValueError(f"Unknown prediction type: {self.prediction_type}")
         
-        loss_batch = F.mse_loss(denoiser_output, target, reduction='none').mean(dim=[1, 2]) # (B,)
+        # loss_batch = F.mse_loss(denoiser_output, target, reduction='none').mean(dim=[1, 2]) # (B,)
+        
+        # === 修改后的 Balanced Loss 代码 ===
+        # 1. 计算每个 Token 的 MSE (B, N)
+        #    reduction='none' 保留维度，mean(dim=2) 对 Token 内部的 128 维特征求均值
+        loss_per_token = F.mse_loss(denoiser_output, target, reduction='none').mean(dim=2)
+        
+        # 2. 生成掩码 (Mask) 来区分大矩阵和小矩阵
+        #    根据 dataloader.py:
+        #    A1 (小): layer=0, mat=0 | B2 (小): layer=1, mat=1
+        #    B1 (大): layer=0, mat=1 | A2 (大): layer=1, mat=0
+        
+        # is_small: (B, N) 布尔矩阵，True 表示该 Token 属于小矩阵
+        is_small = ((layer_ids == 0) & (matrix_ids == 0)) | \
+                   ((layer_ids == 1) & (matrix_ids == 1))
+                   
+        is_large = ~is_small # 取反，属于大矩阵
+        
+        # 3. 分别计算 Loss 并加权
+        #    注意防止分母为 0 (虽然在这个数据集中不太可能)
+        #    sum(dim=1) 是把该样本所有属于小/大矩阵的 Token 误差加起来
+        loss_small = (loss_per_token * is_small.float()).sum(dim=1) / (is_small.float().sum(dim=1) + 1e-8)
+        loss_large = (loss_per_token * is_large.float()).sum(dim=1) / (is_large.float().sum(dim=1) + 1e-8)
+        
+        # 4. 强行五五开：各占 50% 权重
+        #    这样模型会觉得 1 个小 Token 的重要性等于 32 个大 Token 的总和，
+        #    迫使它必须把小矩阵也学好。
+        loss_batch = self.small_weight * loss_small + (1 - self.small_weight) * loss_large
         
         # Min-SNR 加权
         if self.snr_gamma is not None:
@@ -358,8 +388,10 @@ class GaussianDiffusion(nn.Module):
                 loss_weight = snr_clamped / snr
             elif self.prediction_type == 'v':
                 loss_weight = snr_clamped / (snr + 1.0)
+                # loss_weight = torch.ones_like(loss_batch)
             else:
-                loss_weight = torch.ones_like(loss_batch)
+                # loss_weight = torch.ones_like(loss_batch)
+                loss_weight = snr_clamped
             
             loss = (loss_batch * loss_weight).mean()
         else:
