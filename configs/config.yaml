@@ -42,7 +42,7 @@ train:
   batch_size: 128
   weight_decay: 1e-4
   save_interval: 100
-  test_interval: 10
+  val_interval: 10
   grad_clip: 1.0
   cfg_drop_rate: 0.1
   ema_rate: 0.999

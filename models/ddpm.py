@@ -66,7 +66,7 @@ class GaussianDiffusion(nn.Module):
         beta_kwargs: Dict[str, Any] = {},
         prediction_type: str = "eps",
         snr_gamma: Optional[float] = None,
-        small_weight: float = 0.5,
+        small_weight: float = 0.3,
     ):
         """
         高斯扩散模型，支持三种预测类型:
@@ -81,7 +81,7 @@ class GaussianDiffusion(nn.Module):
                 beta_kwargs: beta 调度器参数
                 prediction_type: 预测类型，'eps', 'x', 'v'
                 snr_gamma: Min-SNR 权重截断阈值，None表示不启用，推荐设置为 5.0
-                small_weight: 小样本权重，默认0.5
+                small_weight: 小样本权重，默认0.3
         forward:
             Args:
                 x_0: 原始数据       (batch_size, token_size, token_len)
@@ -350,11 +350,6 @@ class GaussianDiffusion(nn.Module):
         else:
             raise ValueError(f"Unknown prediction type: {self.prediction_type}")
         
-        # loss_batch = F.mse_loss(denoiser_output, target, reduction='none').mean(dim=[1, 2]) # (B,)
-        
-        # === 修改后的 Balanced Loss 代码 ===
-        # 1. 计算每个 Token 的 MSE (B, N)
-        #    reduction='none' 保留维度，mean(dim=2) 对 Token 内部的 128 维特征求均值
         loss_per_token = F.mse_loss(denoiser_output, target, reduction='none').mean(dim=2)
         
         # 2. 生成掩码 (Mask) 来区分大矩阵和小矩阵
@@ -369,15 +364,11 @@ class GaussianDiffusion(nn.Module):
         is_large = ~is_small # 取反，属于大矩阵
         
         # 3. 分别计算 Loss 并加权
-        #    注意防止分母为 0 (虽然在这个数据集中不太可能)
-        #    sum(dim=1) 是把该样本所有属于小/大矩阵的 Token 误差加起来
         loss_small = (loss_per_token * is_small.float()).sum(dim=1) / (is_small.float().sum(dim=1) + 1e-8)
         loss_large = (loss_per_token * is_large.float()).sum(dim=1) / (is_large.float().sum(dim=1) + 1e-8)
         
-        # 4. 强行五五开：各占 50% 权重
-        #    这样模型会觉得 1 个小 Token 的重要性等于 32 个大 Token 的总和，
-        #    迫使它必须把小矩阵也学好。
-        loss_batch = self.small_weight * loss_small + (1 - self.small_weight) * loss_large
+        loss_batch = F.mse_loss(denoiser_output, target, reduction='none').mean(dim=[1, 2]) # (B,)
+        # loss_batch = self.small_weight * loss_small + (1 - self.small_weight) * loss_large
         
         # Min-SNR 加权
         if self.snr_gamma is not None:
@@ -388,7 +379,6 @@ class GaussianDiffusion(nn.Module):
                 loss_weight = snr_clamped / snr
             elif self.prediction_type == 'v':
                 loss_weight = snr_clamped / (snr + 1.0)
-                # loss_weight = torch.ones_like(loss_batch)
             else:
                 # loss_weight = torch.ones_like(loss_batch)
                 loss_weight = snr_clamped
@@ -402,9 +392,20 @@ class GaussianDiffusion(nn.Module):
             flat_pred = denoiser_output.reshape(x_0.shape[0], -1)
             flat_target = target.reshape(x_0.shape[0], -1)
             cos = F.cosine_similarity(flat_pred, flat_target, dim=1).mean()
-            euclidean = F.pairwise_distance(flat_pred, flat_target, p=2).mean()
+            
+            # 计算每个 Token 的 Cosine: (B, T)
+            cos_per_token = F.cosine_similarity(denoiser_output, target, dim=2)
+            # 利用 mask 计算平均值
+            # sum() 是对所有 batch 和 token 求和，再除以总数
+            cos_small = (cos_per_token * is_small.float()).sum() / (is_small.float().sum() + 1e-8)
+            cos_large = (cos_per_token * is_large.float()).sum() / (is_large.float().sum() + 1e-8)
         
-        loss_dict = {'loss': loss, 'cos': cos, 'euclidean': euclidean}
+        loss_dict = {
+            'loss': loss,
+            'cos': cos, 
+            'cos_small': cos_small,
+            'cos_large': cos_large
+        }
         if return_pred:
             loss_dict['pred'] = denoiser_output
             loss_dict['target'] = target

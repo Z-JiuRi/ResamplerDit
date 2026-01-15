@@ -35,9 +35,9 @@ class Trainer:
         setup_logger(self.exp_dir / "logs")
         self.writer = SummaryWriter(self.exp_dir / "logs")
 # ==========================================================================================
-        self.train_loader, self.test_loader = get_dataloaders(cfg)
+        self.train_loader, self.val_loader = get_dataloaders(cfg)
         logger.info(f"[训练]: {len(self.train_loader.dataset)}")
-        logger.info(f"[测试]: {len(self.test_loader.dataset)}")        
+        logger.info(f"[验证]: {len(self.val_loader.dataset)}")        
 # ==========================================================================================
         self.resampler = PerceiverResampler(
             input_dim=cfg.data.cond_shape[1],
@@ -77,12 +77,12 @@ class Trainer:
         )
         
         # 创建学习率调度器
-        total_steps = len(self.train_loader) * cfg.train.epochs
+        tot_steps = len(self.train_loader) * cfg.train.epochs
         if cfg.lr_scheduler.type == 'cosine_warmup':
             kwargs = {
                 'scheduler_type': cfg.lr_scheduler.type,
-                'warmup_steps': cfg.lr_scheduler.warmup_ratio * total_steps,
-                'max_steps': total_steps,
+                'warmup_steps': cfg.lr_scheduler.warmup_ratio * tot_steps,
+                'max_steps': tot_steps,
                 'start_lr': cfg.lr_scheduler.start_lr,
                 'eta_min': cfg.lr_scheduler.eta_min
             }
@@ -119,9 +119,7 @@ class Trainer:
             self.diffusion.train()
             self.resampler.train()
             self.dit.train()
-            total_loss = 0
-            total_cos = 0
-            total_euclidean = 0
+            tot_loss = 0
             
             pbar = tqdm(self.train_loader, desc=f"[Train] Epoch {epoch}")
             for batch_idx, batch in enumerate(pbar):
@@ -139,7 +137,7 @@ class Trainer:
                 else:
                     current_cond = cond_feats
                 
-                if epoch % self.cfg.train.test_interval == 0 and batch_idx == len(self.train_loader) - 1:
+                if epoch % self.cfg.train.val_interval == 0 and batch_idx == len(self.train_loader) - 1:
                     loss_dict = self.diffusion(tokens, current_cond, layer_ids=layer_ids, matrix_ids=matrix_ids, return_pred=True)
                     pred = loss_dict['pred']
                     target = loss_dict['target']
@@ -151,7 +149,8 @@ class Trainer:
                 
                 loss = loss_dict['loss']
                 cos = loss_dict['cos']
-                euclidean = loss_dict['euclidean']
+                cos_small = loss_dict['cos_small']
+                cos_large = loss_dict['cos_large']
                 
                 # 2. Backpropagation
                 self.optimizer.zero_grad()
@@ -165,36 +164,31 @@ class Trainer:
                 self.ema.update()
                 self.scheduler.step()
                 
-                total_loss += loss.item()
-                total_cos += cos.item()
-                total_euclidean += euclidean.item()
+                tot_loss += loss.item()
                 
                 # 4. Logging
                 self.step += 1
                 self.writer.add_scalar('Train/Loss', loss.item(), self.step)
                 self.writer.add_scalar('Train/LR', self.scheduler.get_last_lr()[0], self.step)
                 self.writer.add_scalar('Train/Cos', cos.item(), self.step)
-                self.writer.add_scalar('Train/Euclidean', euclidean.item(), self.step)
+                self.writer.add_scalar('Train/Cos_small', cos_small.item(), self.step)
+                self.writer.add_scalar('Train/Cos_large', cos_large.item(), self.step)
                 self.writer.add_scalar('Train/GradNorm', grad_norm, self.step)
                 
                 pbar.set_postfix({
                     'loss': f"{loss.item():.4e}",
-                    'lr': f"{self.scheduler.get_last_lr()[0]:.4e}",
-                    'cos': f"{cos.item():.4e}",
-                    'euclidean': f"{euclidean.item():.4e}"
+                    'lr': f"{self.scheduler.get_last_lr()[0]:.4e}"
                 })
             
-            avg_loss = total_loss / len(self.train_loader)
-            avg_cos = total_cos / len(self.train_loader)
-            avg_euclidean = total_euclidean / len(self.train_loader)
+            avg_loss = tot_loss / len(self.train_loader)
             
             # Logging
-            logger.info(f"[Train] Epoch {epoch}: Loss={avg_loss:.4e}, Cos={avg_cos:.4e}, Euclidean={avg_euclidean:.4e}")
+            logger.info(f"[Train] Epoch {epoch}: Loss={avg_loss:.4e}")
             
-            if epoch % self.cfg.train.test_interval == 0:
-                test_loss = self.test(epoch)
-                if test_loss < best_loss:
-                    best_loss = test_loss
+            if epoch % self.cfg.train.val_interval == 0:
+                val_loss = self.validate(epoch)
+                if val_loss < best_loss:
+                    best_loss = val_loss
                     self.save_checkpoint('best')
             
             if epoch % self.cfg.train.save_interval == 0:
@@ -202,16 +196,17 @@ class Trainer:
             
 
     @torch.no_grad()
-    def test(self, epoch):
+    def validate(self, epoch):
         self.ema.apply_shadow()
         self.diffusion.eval()
         self.resampler.eval()
         self.dit.eval()
-        total_loss = 0
-        total_cos = 0
-        total_euclidean = 0
+        tot_loss = 0
+        tot_cos = 0
+        tot_cos_small = 0
+        tot_cos_large = 0
         
-        for batch_idx, batch in enumerate(self.test_loader):
+        for batch_idx, batch in enumerate(self.val_loader):
             cond = batch['cond'].to(self.device)
             cond_mask = batch['cond_mask'].to(self.device)
             tokens = batch['tokens'].to(self.device)
@@ -222,22 +217,25 @@ class Trainer:
             loss_dict = self.diffusion(tokens, cond_feats, layer_ids=layer_ids, matrix_ids=matrix_ids, return_pred=True)
             pred = loss_dict['pred']
             target = loss_dict['target']
-            if batch_idx == len(self.test_loader) - 1:
-                plot_heatmap(pred, target, self.exp_dir / "results" / "heatmap" / f"[Test]_{epoch}.png")
-                plot_histogram(pred, target, self.exp_dir / "results" / "hist" / f"[Test]_{epoch}.png")
-                plot_gaussian(pred - target, self.exp_dir / "results" / "diff" / f"[Test]_{epoch}.png")
-            total_loss += loss_dict['loss'].item()
-            total_cos += loss_dict['cos'].item()
-            total_euclidean += loss_dict['euclidean'].item()
+            if batch_idx == len(self.val_loader) - 1:
+                plot_heatmap(pred, target, self.exp_dir / "results" / "heatmap" / f"[Val]_{epoch}.png")
+                plot_histogram(pred, target, self.exp_dir / "results" / "hist" / f"[Val]_{epoch}.png")
+                plot_gaussian(pred - target, self.exp_dir / "results" / "diff" / f"[Val]_{epoch}.png")
+            tot_loss += loss_dict['loss'].item()
+            tot_cos += loss_dict['cos'].item()
+            tot_cos_small += loss_dict['cos_small'].item()
+            tot_cos_large += loss_dict['cos_large'].item()
             
-        avg_loss = total_loss / len(self.test_loader)
-        avg_cos = total_cos / len(self.test_loader)
-        avg_euclidean = total_euclidean / len(self.test_loader)
+        avg_loss = tot_loss / len(self.val_loader)
+        avg_cos = tot_cos / len(self.val_loader)
+        avg_cos_small = tot_cos_small / len(self.val_loader)
+        avg_cos_large = tot_cos_large / len(self.val_loader)
         
-        logger.info(f"[Test] Epoch {epoch}: Loss={avg_loss:.4e}, Cos={avg_cos:.4e}, Euclidean={avg_euclidean:.4e}")
-        self.writer.add_scalar('Test/Loss', avg_loss, epoch)
-        self.writer.add_scalar('Test/Cos', avg_cos, epoch)
-        self.writer.add_scalar('Test/Euclidean', avg_euclidean, epoch)
+        logger.info(f"[Val] Epoch {epoch}: Loss={avg_loss:.4e}")
+        self.writer.add_scalar('Val/Loss', avg_loss, epoch)
+        self.writer.add_scalar('Val/Cos', avg_cos, epoch)
+        self.writer.add_scalar('Val/Cos_small', avg_cos_small, epoch)
+        self.writer.add_scalar('Val/Cos_large', avg_cos_large, epoch)
         self.ema.restore()
         return avg_loss
 

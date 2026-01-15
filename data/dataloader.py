@@ -212,19 +212,19 @@ def get_dataloaders(cfg):
     
     tot_size = len(tot_datasets)
     train_size = int(cfg.data.train_ratio * tot_size)
-    test_size  = tot_size - train_size
+    val_size  = tot_size - train_size
     
     # 按顺序划分
     # train_datasets = torch.utils.data.Subset(tot_datasets, range(train_size))
-    # test_datasets = torch.utils.data.Subset(tot_datasets, range(train_size, len(tot_datasets)))
+    # val_datasets = torch.utils.data.Subset(tot_datasets, range(train_size, len(tot_datasets)))
     
-    train_datasets, test_datasets = random_split(
+    train_datasets, val_datasets = random_split(
         tot_datasets, 
-        [train_size, test_size],
+        [train_size, val_size],
         generator=torch.Generator().manual_seed(cfg.train.seed) 
     )
     
     train_loader = DataLoader(train_datasets, batch_size=cfg.train.batch_size, shuffle=True, num_workers=cfg.data.num_workers)
-    test_loader = DataLoader(test_datasets, batch_size=cfg.train.batch_size, shuffle=False, num_workers=cfg.data.num_workers)
+    val_loader = DataLoader(val_datasets, batch_size=cfg.train.batch_size, shuffle=False, num_workers=cfg.data.num_workers)
     
-    return train_loader, test_loader
+    return train_loader, val_loader
