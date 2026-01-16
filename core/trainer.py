@@ -76,6 +76,7 @@ class Trainer:
         
         self.grad_accum_steps = self.cfg.train.grad_accum_steps
         tot_steps = (len(self.train_loader) * cfg.train.epochs + self.grad_accum_steps - 1) // self.grad_accum_steps
+        
         if cfg.lr_scheduler.type == 'cosine_warmup':
             kwargs = {
                 'scheduler_type': cfg.lr_scheduler.type,
