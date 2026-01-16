@@ -101,6 +101,9 @@ class Trainer:
             }),
             decay=cfg.train.get('ema_rate', 0.999)
         )
+        
+        # Mixed Precision
+        self.scaler = torch.cuda.amp.GradScaler()
 
     def train(self):
         logger.info("Starting Flow Matching training...")
@@ -121,38 +124,41 @@ class Trainer:
                 layer_ids = batch['layer_ids'].to(self.device)
                 matrix_ids = batch['matrix_ids'].to(self.device)
                 
-                cond_feats = self.resampler(cond, cond_mask)
-                cond_feats = cond_feats + torch.randn_like(cond_feats) * self.cfg.train.cond_noise_factor
+                with torch.cuda.amp.autocast():
+                    cond_feats = self.resampler(cond, cond_mask)
+                    cond_feats = cond_feats + torch.randn_like(cond_feats) * self.cfg.train.cond_noise_factor
+                    
+                    if self.cfg.train.cfg_drop_rate > 0 and torch.rand(1).item() < self.cfg.train.cfg_drop_rate:
+                        current_cond = self.null_cond.expand(cond_feats.shape[0], -1, -1)
+                    else:
+                        current_cond = cond_feats
+                    
+                    if epoch % self.cfg.train.val_interval == 0 and batch_idx == len(self.train_loader) - 1:
+                        loss_dict = self.diffusion(tokens, current_cond, layer_ids=layer_ids, matrix_ids=matrix_ids, return_pred=True)
+                        pred = loss_dict['pred']   # 这里是 Velocity
+                        target = loss_dict['target'] # 这里是 x1 - x0
+                        # 可视化 (注意：这里可视化的是速度场 Velocity，不是重建的参数)
+                        plot_heatmap(pred, target, self.exp_dir / "results" / "heatmap" / f"[Train]_{epoch}.png")
+                        plot_histogram(pred, target, self.exp_dir / "results" / "hist" / f"[Train]_{epoch}.png")
+                        plot_gaussian(pred - target, self.exp_dir / "results" / "diff" / f"[Train]_{epoch}.png")
+                    else:
+                        loss_dict = self.diffusion(tokens, current_cond, layer_ids=layer_ids, matrix_ids=matrix_ids)
+                    
+                    loss = loss_dict['loss'] / self.grad_accum_steps
+                    cos = loss_dict['cos']
+                    cos_small = loss_dict['cos_small']
+                    cos_large = loss_dict['cos_large']
                 
-                if self.cfg.train.cfg_drop_rate > 0 and torch.rand(1).item() < self.cfg.train.cfg_drop_rate:
-                    current_cond = self.null_cond.expand(cond_feats.shape[0], -1, -1)
-                else:
-                    current_cond = cond_feats
-                
-                if epoch % self.cfg.train.val_interval == 0 and batch_idx == len(self.train_loader) - 1:
-                    loss_dict = self.diffusion(tokens, current_cond, layer_ids=layer_ids, matrix_ids=matrix_ids, return_pred=True)
-                    pred = loss_dict['pred']   # 这里是 Velocity
-                    target = loss_dict['target'] # 这里是 x1 - x0
-                    # 可视化 (注意：这里可视化的是速度场 Velocity，不是重建的参数)
-                    plot_heatmap(pred, target, self.exp_dir / "results" / "heatmap" / f"[Train]_{epoch}.png")
-                    plot_histogram(pred, target, self.exp_dir / "results" / "hist" / f"[Train]_{epoch}.png")
-                    plot_gaussian(pred - target, self.exp_dir / "results" / "diff" / f"[Train]_{epoch}.png")
-                else:
-                    loss_dict = self.diffusion(tokens, current_cond, layer_ids=layer_ids, matrix_ids=matrix_ids)
-                
-                loss = loss_dict['loss'] / self.grad_accum_steps
-                cos = loss_dict['cos']
-                cos_small = loss_dict['cos_small']
-                cos_large = loss_dict['cos_large']
-                
-                loss.backward()
+                self.scaler.scale(loss).backward()
                 should_update = ((batch_idx + 1) % self.grad_accum_steps == 0) or (batch_idx + 1 == len(self.train_loader))
                 if should_update:
+                    self.scaler.unscale_(self.optimizer)
                     grad_norm = torch.nn.utils.clip_grad_norm_(
                         list(self.resampler.parameters()) + list(self.dit.parameters()) + [self.null_cond], 
                         self.cfg.train.grad_clip
                     )
-                    self.optimizer.step()
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
                     self.ema.update()
                     self.scheduler.step()
                     self.optimizer.zero_grad()
@@ -199,8 +205,9 @@ class Trainer:
             layer_ids = batch['layer_ids'].to(self.device)
             matrix_ids = batch['matrix_ids'].to(self.device)
             
-            cond_feats = self.resampler(cond, cond_mask)
-            loss_dict = self.diffusion(tokens, cond_feats, layer_ids=layer_ids, matrix_ids=matrix_ids, return_pred=True)
+            with torch.cuda.amp.autocast():
+                cond_feats = self.resampler(cond, cond_mask)
+                loss_dict = self.diffusion(tokens, cond_feats, layer_ids=layer_ids, matrix_ids=matrix_ids, return_pred=True)
             
             pred = loss_dict['pred']
             target = loss_dict['target']
@@ -235,19 +242,7 @@ class Trainer:
             'null_cond': self.null_cond,
             'optimizer': self.optimizer.state_dict(),
             'scheduler': self.scheduler.state_dict(),
-            'ema_shadow': self.ema.shadow,
-            'epoch': epoch
-        }, path)
-        logger.info(f"Saved checkpoint to {path}")
-
-    def save_checkpoint(self, epoch):
-        path = self.exp_dir / "ckpts" / f"{epoch}.pth"
-        torch.save({
-            'resampler': self.resampler.state_dict(),
-            'dit': self.dit.state_dict(),
-            'null_cond': self.null_cond,
-            'optimizer': self.optimizer.state_dict(),
-            'scheduler': self.scheduler.state_dict(),
+            'scaler': self.scaler.state_dict(),
             'ema_shadow': self.ema.shadow,
             'epoch': epoch
         }, path)
@@ -267,6 +262,9 @@ class Trainer:
         # [建议新增] 加载 LR 调度器
         if 'scheduler' in checkpoint and hasattr(self, 'scheduler'):
             self.scheduler.load_state_dict(checkpoint['scheduler'])
+        
+        if 'scaler' in checkpoint:
+            self.scaler.load_state_dict(checkpoint['scaler'])
             
         self.start_epoch = checkpoint['epoch'] + 1
         if self.training:
