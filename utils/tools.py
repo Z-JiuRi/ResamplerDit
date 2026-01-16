@@ -66,6 +66,10 @@ def create_exp_dirs(path: str):
     (Path(path) / "results" / "diff").mkdir(parents=True, exist_ok=True)
     return Path(path)
 
+def compute_model_parameters(model):
+    """计算模型参数数量"""
+    return sum(p.numel() for p in model.parameters())
+
 def get_grad_norm(model):
     """计算模型所有参数的梯度范数"""
     total_norm = 0.0

@@ -6,7 +6,7 @@ import os
 from omegaconf import OmegaConf
 import torch.nn as nn
 
-from models.ddpm import GaussianDiffusion
+from models.flow_matching import RectifiedFlow
 from models.dit import DiT
 from models.resampler import PerceiverResampler
 from utils.scheduler import get_lr_scheduler
@@ -23,7 +23,7 @@ class Trainer:
 # ==========================================================================================
         self.cfg = cfg
         self.device = torch.device(cfg.data.device)
-        print(f"using device: {self.device}")
+        logger.info(f"using device: {self.device}")
         self.exp_dir = create_exp_dirs(cfg.exp_dir)
         OmegaConf.save(cfg, self.exp_dir / "logs" / "config.yaml")
         logger.info(f"configs:\n{OmegaConf.to_yaml(cfg)}")
@@ -34,8 +34,8 @@ class Trainer:
         self.writer = SummaryWriter(self.exp_dir / "logs")
 # ==========================================================================================
         self.train_loader, self.val_loader = get_dataloaders(cfg)
-        logger.info(f"[训练]: {len(self.train_loader.dataset)}")
-        logger.info(f"[验证]: {len(self.val_loader.dataset)}")        
+        logger.info(f"[Train Size]: {len(self.train_loader.dataset)}")
+        logger.info(f"[Val Size]: {len(self.val_loader.dataset)}")        
 # ==========================================================================================
         self.resampler = PerceiverResampler(
             input_dim=cfg.data.cond_shape[1],
@@ -57,16 +57,20 @@ class Trainer:
             dropout=cfg.resampler.dropout
         ).to(self.device)
         
-        self.diffusion = GaussianDiffusion(
+        self.diffusion = RectifiedFlow(
             denoiser=self.dit,
-            timesteps=cfg.diffusion.timesteps,
-            beta_kwargs=cfg.diffusion.betas,
-            prediction_type=cfg.diffusion.prediction_type,
-            snr_gamma=cfg.diffusion.snr_gamma,
+            num_train_timesteps=cfg.diffusion.timesteps, # 1000, 用于缩放
+            snr_gamma=cfg.diffusion.get('snr_gamma', None), # 默认 None
             small_weight=cfg.diffusion.small_weight
         ).to(self.device)
         
         self.null_cond = nn.Parameter(torch.zeros(1, cfg.resampler.latent_cond_len, cfg.resampler.hidden_dim, device=self.device), requires_grad=True)
+        
+        logger.info(f"[Resampler Params]: {sum(p.numel() for p in self.resampler.parameters())}")
+        logger.info(f"[DiT Params]: {sum(p.numel() for p in self.dit.parameters())}")
+        logger.info(f"[Flow-Matching Params]: {sum(p.numel() for p in self.diffusion.parameters())}")
+        logger.info(f"[Null Cond Params]: {self.null_cond.numel()}")
+        logger.info(f"[Total Params]: {sum(p.numel() for p in self.resampler.parameters()) + sum(p.numel() for p in self.dit.parameters()) + self.null_cond.numel()}")
         
         self.optimizer = optim.AdamW(
             list(self.resampler.parameters()) + list(self.dit.parameters()) + [self.null_cond],
@@ -74,7 +78,6 @@ class Trainer:
             weight_decay=cfg.train.weight_decay
         )
         
-        # 创建学习率调度器
         tot_steps = len(self.train_loader) * cfg.train.epochs
         if cfg.lr_scheduler.type == 'cosine_warmup':
             kwargs = {
@@ -89,7 +92,6 @@ class Trainer:
         self.start_epoch = 1 
         self.step = 0
         
-        # EMA
         self.ema = EMA(
             nn.ModuleDict({
                 'resampler': self.resampler,
@@ -99,12 +101,8 @@ class Trainer:
             decay=cfg.train.get('ema_rate', 0.999)
         )
 
-        # 如果配置中有 resume 路径，可以在这里自动加载
-        # if cfg.train.resume_path:
-        #     self.load_checkpoint(cfg.train.resume_path)
-
     def train(self):
-        logger.info("Starting training...")
+        logger.info("Starting Flow Matching training...")
         best_loss = float('inf')
         for epoch in range(self.start_epoch, self.cfg.train.epochs + 1):
             self.diffusion.train()
@@ -122,16 +120,17 @@ class Trainer:
                 
                 cond_feats = self.resampler(cond, cond_mask)
                 cond_feats = cond_feats + torch.randn_like(cond_feats) * self.cfg.train.cond_noise_factor
+                
                 if self.cfg.train.cfg_drop_rate > 0 and torch.rand(1).item() < self.cfg.train.cfg_drop_rate:
-                    # 替换为 Null Condition (Broadcast 到 batch size)
                     current_cond = self.null_cond.expand(cond_feats.shape[0], -1, -1)
                 else:
                     current_cond = cond_feats
                 
                 if epoch % self.cfg.train.val_interval == 0 and batch_idx == len(self.train_loader) - 1:
                     loss_dict = self.diffusion(tokens, current_cond, layer_ids=layer_ids, matrix_ids=matrix_ids, return_pred=True)
-                    pred = loss_dict['pred']
-                    target = loss_dict['target']
+                    pred = loss_dict['pred']   # 这里是 Velocity
+                    target = loss_dict['target'] # 这里是 x1 - x0
+                    # 可视化 (注意：这里可视化的是速度场 Velocity，不是重建的参数)
                     plot_heatmap(pred, target, self.exp_dir / "results" / "heatmap" / f"[Train]_{epoch}.png")
                     plot_histogram(pred, target, self.exp_dir / "results" / "hist" / f"[Train]_{epoch}.png")
                     plot_gaussian(pred - target, self.exp_dir / "results" / "diff" / f"[Train]_{epoch}.png")
@@ -143,7 +142,6 @@ class Trainer:
                 cos_small = loss_dict['cos_small']
                 cos_large = loss_dict['cos_large']
                 
-                # 2. Backpropagation
                 self.optimizer.zero_grad()
                 loss.backward()
                 
@@ -156,9 +154,8 @@ class Trainer:
                 self.scheduler.step()
                 
                 tot_loss += loss.item()
-                
-                # 4. Logging
                 self.step += 1
+                
                 self.writer.add_scalar('Train/Loss', loss.item(), self.step)
                 self.writer.add_scalar('Train/LR', self.scheduler.get_last_lr()[0], self.step)
                 self.writer.add_scalar('Train/Cos', cos.item(), self.step)
@@ -166,14 +163,9 @@ class Trainer:
                 self.writer.add_scalar('Train/Cos_large', cos_large.item(), self.step)
                 self.writer.add_scalar('Train/GradNorm', grad_norm, self.step)
                 
-                pbar.set_postfix({
-                    'loss': f"{loss.item():.4e}",
-                    'lr': f"{self.scheduler.get_last_lr()[0]:.4e}"
-                })
+                pbar.set_postfix({'loss': f"{loss.item():.4e}", 'lr': f"{self.scheduler.get_last_lr()[0]:.4e}"})
             
             avg_loss = tot_loss / len(self.train_loader)
-            
-            # Logging
             logger.info(f"[Train] Epoch {epoch}: Loss={avg_loss:.4e}")
             
             if epoch % self.cfg.train.val_interval == 0:
@@ -184,12 +176,11 @@ class Trainer:
             
             if epoch % self.cfg.train.save_interval == 0:
                 self.save_checkpoint(epoch)
-            
 
     @torch.no_grad()
     def validate(self, epoch):
         self.ema.apply_shadow()
-        self.diffusion.eval()
+        self.diffusion.eval() # 这里主要是 eval dit
         self.resampler.eval()
         self.dit.eval()
         tot_loss = 0
@@ -244,7 +235,7 @@ class Trainer:
             'epoch': epoch
         }, path)
         logger.info(f"Saved checkpoint to {path}")
-    
+
     def save_checkpoint(self, epoch):
         path = self.exp_dir / "ckpts" / f"{epoch}.pth"
         torch.save({
