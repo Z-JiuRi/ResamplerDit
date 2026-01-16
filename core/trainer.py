@@ -74,8 +74,8 @@ class Trainer:
             weight_decay=cfg.train.weight_decay
         )
         
-        # 创建学习率调度器
-        tot_steps = len(self.train_loader) * cfg.train.epochs
+        self.grad_accum_steps = self.cfg.train.grad_accum_steps
+        tot_steps = (len(self.train_loader) * cfg.train.epochs + self.grad_accum_steps - 1) // self.grad_accum_steps
         if cfg.lr_scheduler.type == 'cosine_warmup':
             kwargs = {
                 'scheduler_type': cfg.lr_scheduler.type,
@@ -111,6 +111,8 @@ class Trainer:
             self.resampler.train()
             self.dit.train()
             tot_loss = 0
+            grad_norm = 0.0
+            self.optimizer.zero_grad()
             
             pbar = tqdm(self.train_loader, desc=f"[Train] Epoch {epoch}")
             for batch_idx, batch in enumerate(pbar):
@@ -138,28 +140,27 @@ class Trainer:
                 else:
                     loss_dict = self.diffusion(tokens, current_cond, layer_ids=layer_ids, matrix_ids=matrix_ids)
                 
-                loss = loss_dict['loss']
+                loss = loss_dict['loss'] / self.grad_accum_steps
                 cos = loss_dict['cos']
                 cos_small = loss_dict['cos_small']
                 cos_large = loss_dict['cos_large']
                 
-                # 2. Backpropagation
-                self.optimizer.zero_grad()
                 loss.backward()
+                should_update = ((batch_idx + 1) % self.grad_accum_steps == 0) or (batch_idx + 1 == len(self.train_loader))
+                if should_update:
+                    grad_norm = torch.nn.utils.clip_grad_norm_(
+                        list(self.resampler.parameters()) + list(self.dit.parameters()) + [self.null_cond], 
+                        self.cfg.train.grad_clip
+                    )
+                    self.optimizer.step()
+                    self.ema.update()
+                    self.scheduler.step()
+                    self.optimizer.zero_grad()
                 
-                grad_norm = torch.nn.utils.clip_grad_norm_(
-                    list(self.resampler.parameters()) + list(self.dit.parameters()) + [self.null_cond], 
-                    self.cfg.train.grad_clip
-                )
-                self.optimizer.step()
-                self.ema.update()
-                self.scheduler.step()
+                tot_loss += loss_dict['loss'].item()
                 
-                tot_loss += loss.item()
-                
-                # 4. Logging
                 self.step += 1
-                self.writer.add_scalar('Train/Loss', loss.item(), self.step)
+                self.writer.add_scalar('Train/Loss', loss_dict['loss'].item(), self.step)
                 self.writer.add_scalar('Train/LR', self.scheduler.get_last_lr()[0], self.step)
                 self.writer.add_scalar('Train/Cos', cos.item(), self.step)
                 self.writer.add_scalar('Train/Cos_small', cos_small.item(), self.step)
@@ -182,8 +183,8 @@ class Trainer:
                     best_loss = val_loss
                     self.save_checkpoint('best')
             
-            if epoch % self.cfg.train.save_interval == 0:
-                self.save_checkpoint(epoch)
+            # if epoch % self.cfg.train.save_interval == 0:
+            #     self.save_checkpoint(epoch)
             
 
     @torch.no_grad()

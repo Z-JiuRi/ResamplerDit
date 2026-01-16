@@ -1,5 +1,5 @@
 data:
-  data_dir: /home/zxd/zxd/Huawei/datasets/lora/  # 指向你的数据集根目录
+  data_dir: /nfs5/zxd/Huawei/datasets/lora/  # 指向你的数据集根目录
   stats_path: ./data/stats.pth
   num_workers: 8
   train_ratio: 0.9
@@ -39,8 +39,9 @@ dit:
 train:
   seed: 3407
   epochs: 100
-  batch_size: 128
+  batch_size: 180
   weight_decay: 1e-4
+  grad_accum_steps: 1
   save_interval: 100
   val_interval: 10
   grad_clip: 1.0
