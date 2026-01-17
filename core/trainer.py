@@ -74,8 +74,12 @@ class Trainer:
             weight_decay=cfg.train.weight_decay
         )
         
+        # 梯度累积步数
+        self.grad_accum_steps = cfg.train.get('grad_accum_steps', 1)
+        
         # 创建学习率调度器
-        tot_steps = len(self.train_loader) * cfg.train.epochs
+        steps_per_epoch = (len(self.train_loader) + self.grad_accum_steps - 1) // self.grad_accum_steps
+        tot_steps = steps_per_epoch * cfg.train.epochs
         if cfg.lr_scheduler.type == 'cosine_warmup':
             kwargs = {
                 'scheduler_type': cfg.lr_scheduler.type,
@@ -144,32 +148,33 @@ class Trainer:
                 cos_large = loss_dict['cos_large']
                 
                 # 2. Backpropagation
-                self.optimizer.zero_grad()
-                loss.backward()
+                (loss / self.grad_accum_steps).backward()
                 
-                grad_norm = torch.nn.utils.clip_grad_norm_(
-                    list(self.resampler.parameters()) + list(self.dit.parameters()) + [self.null_cond], 
-                    self.cfg.train.grad_clip
-                )
-                self.optimizer.step()
-                self.ema.update()
-                self.scheduler.step()
+                if (batch_idx + 1) % self.grad_accum_steps == 0 or (batch_idx + 1) == len(self.train_loader):
+                    grad_norm = torch.nn.utils.clip_grad_norm_(
+                        list(self.resampler.parameters()) + list(self.dit.parameters()) + [self.null_cond], 
+                        self.cfg.train.grad_clip
+                    )
+                    self.optimizer.step()
+                    self.ema.update()
+                    self.scheduler.step()
+                    self.optimizer.zero_grad()
+                    
+                    # 4. Logging
+                    self.step += 1
+                    self.writer.add_scalar('Train/Loss', loss.item(), self.step)
+                    self.writer.add_scalar('Train/LR', self.scheduler.get_last_lr()[0], self.step)
+                    self.writer.add_scalar('Train/Cos', cos.item(), self.step)
+                    self.writer.add_scalar('Train/Cos_small', cos_small.item(), self.step)
+                    self.writer.add_scalar('Train/Cos_large', cos_large.item(), self.step)
+                    self.writer.add_scalar('Train/GradNorm', grad_norm, self.step)
+                    
+                    pbar.set_postfix({
+                        'loss': f"{loss.item():.4e}",
+                        'lr': f"{self.scheduler.get_last_lr()[0]:.4e}"
+                    })
                 
                 tot_loss += loss.item()
-                
-                # 4. Logging
-                self.step += 1
-                self.writer.add_scalar('Train/Loss', loss.item(), self.step)
-                self.writer.add_scalar('Train/LR', self.scheduler.get_last_lr()[0], self.step)
-                self.writer.add_scalar('Train/Cos', cos.item(), self.step)
-                self.writer.add_scalar('Train/Cos_small', cos_small.item(), self.step)
-                self.writer.add_scalar('Train/Cos_large', cos_large.item(), self.step)
-                self.writer.add_scalar('Train/GradNorm', grad_norm, self.step)
-                
-                pbar.set_postfix({
-                    'loss': f"{loss.item():.4e}",
-                    'lr': f"{self.scheduler.get_last_lr()[0]:.4e}"
-                })
             
             avg_loss = tot_loss / len(self.train_loader)
             

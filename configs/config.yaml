@@ -3,7 +3,7 @@ data:
   stats_path: ./data/stats.pth
   num_workers: 8
   train_ratio: 0.9
-  device: cuda:0
+  device: cuda:1
   token_size: 128
   cond_shape:
   - 224
@@ -46,7 +46,7 @@ dit:
 train:
   seed: 3407
   epochs: 10000
-  batch_size: 200
+  batch_size: 224
   weight_decay: 0.05
   grad_accum_steps: 8
   save_interval: 100
@@ -73,5 +73,5 @@ inference:
   eta: 1.0
   output_dir: exps/eps14/inference
 mode: train
-exp_dir: exps/eps16
-msg: 1
+exp_dir: exps/eps17
+msg: 带梯度累计
