@@ -11,7 +11,7 @@ log_file=logs/train_$(date +%Y%m%d_%H%M%S).log
 # 基础训练命令
 nohup python main.py \
     mode=train \
-    exp_dir=exps/eps15 \
+    exp_dir=exps/test \
     data.device=cuda:0 \
     \
     diffusion.prediction_type=eps \
@@ -30,7 +30,7 @@ nohup python main.py \
     dit.mlp_ratio=4.0 \
     dit.dropout=0.2 \
     \
-    train.epochs=5000 \
+    train.epochs=50 \
     train.batch_size=128 \
     train.weight_decay=5e-2 \
     train.cfg_drop_rate=0.1 \
