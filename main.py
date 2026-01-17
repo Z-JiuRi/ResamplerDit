@@ -1,9 +1,16 @@
+import argparse
+from omegaconf import OmegaConf
+
 from core.trainer import Trainer
 from core.inferencer import Inferencer
-from utils.tools import load_config
 
 def main():
-    cfg = load_config("configs/config.yaml")
+    parser = argparse.ArgumentParser(description='LoRA Diffusion Training')
+    parser.add_argument('--config', type=str, default='', help="")
+
+    args = parser.parse_args()
+    
+    cfg = OmegaConf.load(args.config)
 
     if cfg.mode == 'train':
         trainer = Trainer(cfg)

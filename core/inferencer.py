@@ -9,8 +9,7 @@ from utils.tools import load_config, seed_everything
 
 class Inferencer:
     def __init__(self, cfg):
-        self.cfg = load_config(cfg.inference.config)
-        cfg = self.cfg
+        self.cfg = cfg
         self.device = torch.device(cfg.data.device)
         self.use_ema = cfg.inference.use_ema
         self.checkpoint_path = cfg.inference.checkpoint_path
