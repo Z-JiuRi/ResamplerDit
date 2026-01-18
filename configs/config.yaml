@@ -3,7 +3,7 @@ data:
   stats_path: ./data/stats.pth
   num_workers: 8
   train_ratio: 0.9
-  device: cuda:1
+  device: cuda:2
   token_size: 128
   cond_shape:
   - 224
@@ -48,7 +48,6 @@ train:
   epochs: 3000
   batch_size: 200
   weight_decay: 0.05
-  grad_accum_steps: 8
   save_interval: 100
   val_interval: 10
   grad_clip: 1.0
@@ -64,14 +63,14 @@ lr_scheduler:
 inference:
   seed: 3407
   use_ema: true
-  config: exps/eps18/logs/config.yaml
-  checkpoint_path: exps/eps18/ckpts/best.pth
+  config: exps/eps19/logs/config.yaml
+  checkpoint_path: exps/eps19/ckpts/best.pth
   cond_path: /home/zxd/zxd/Huawei/datasets/lora/test/conditions/seed5/05184.pth
   cfg_scale: 1.0
   use_ddim: true
   ddim_steps: 50
   eta: 1.0
-  output_dir: exps/eps18/inference
+  output_dir: exps/eps19/inference
 mode: train
-exp_dir: exps/eps18
+exp_dir: exps/eps19
 msg: 1
