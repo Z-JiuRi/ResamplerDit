@@ -215,7 +215,11 @@ class Inferencer:
                 matrix_data = matrix_flat.reshape(cols, rows) 
                 
                 # 2. 反归一化 (在转置状态下进行，因为 Stats 是基于转置计算的)
-                if name in self.stats:
+                if 'means' in self.stats and name in self.stats['means']:
+                    mean = self.stats['means'][name]
+                    std = self.stats['stds'][name]
+                    matrix_data = matrix_data * std + mean
+                elif name in self.stats:
                     stat = self.stats[name]
                     matrix_data = matrix_data * stat['std'] + stat['mean']
                 
@@ -225,7 +229,11 @@ class Inferencer:
             else: # 针对 A 矩阵 (a1, a2)，它们本来就是 (Rank, Dim)，无需特殊处理
                 matrix_data = matrix_flat.reshape(rows, cols)
                 
-                if name in self.stats:
+                if 'means' in self.stats and name in self.stats['means']:
+                    mean = self.stats['means'][name]
+                    std = self.stats['stds'][name]
+                    matrix_data = matrix_data * std + mean
+                elif name in self.stats:
                     stat = self.stats[name]
                     matrix_data = matrix_data * stat['std'] + stat['mean']
             
