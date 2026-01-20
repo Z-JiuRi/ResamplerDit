@@ -136,22 +136,39 @@ class Inferencer:
     @torch.no_grad()
     def inference(self):
         """
-        执行推理
-        Args:
-            cond_tensor: 原始条件 Tensor (Batch=1, 224, 512)
-            cond_mask: 条件 Mask (可选)
-            cfg_scale: Classifier-Free Guidance 比例 (推荐 > 1.0)
-        Returns:
-            result_dict: 包含 'a1', 'b1', 'a2', 'b2' 真实参数矩阵的字典
+        执行推理，支持单文件或目录遍历
         """
         self.resampler.eval()
         self.dit.eval()
         
-        cond_tensor = torch.load(self.cond_path, map_location=self.device)['cond'].unsqueeze(0)
-        cond_mask = torch.load(self.cond_path, map_location=self.device)['mask'].unsqueeze(0)
+        if os.path.isdir(self.cond_path):
+            print(f"Searching for condition files in {self.cond_path}...")
+            cond_files = []
+            for root, dirs, files in os.walk(self.cond_path):
+                for file in files:
+                    if file.endswith('.pth'):
+                        cond_files.append(os.path.join(root, file))
+            
+            cond_files.sort()
+            print(f"Found {len(cond_files)} condition files.")
+            
+            for i, cond_file in enumerate(cond_files):
+                print(f"[{i+1}/{len(cond_files)}] Processing {cond_file}...")
+                self._inference_single(cond_file)
+        else:
+            print(f"Processing single file {self.cond_path}...")
+            self._inference_single(self.cond_path)
+
+    def _inference_single(self, cond_path):
+        """
+        单个文件的推理逻辑
+        """
+        cond_tensor = torch.load(cond_path, map_location=self.device)
+        cond = cond_tensor['cond'].unsqueeze(0)
+        cond_mask = cond_tensor['mask'].unsqueeze(0)
 
         # 1. 通过 Resampler 获取条件特征
-        cond_feats = self.resampler(cond_tensor, cond_mask) # (1, 64, hidden_dim)
+        cond_feats = self.resampler(cond, cond_mask) # (1, 64, hidden_dim)
         
         # 2. 准备 Unconditional Condition (用于 CFG)
         # null_cond 是 (1, 64, hidden_dim)，需要 expand 到 batch size
@@ -159,7 +176,7 @@ class Inferencer:
         
         # 3. 准备采样所需的 IDs
         # 扩展到 Batch 维度 (Batch, seq_len)
-        batch_size = cond_tensor.shape[0]
+        batch_size = cond.shape[0]
         layer_ids = self.layer_ids.unsqueeze(0).repeat(batch_size, 1).to(self.device)
         matrix_ids = self.matrix_ids.unsqueeze(0).repeat(batch_size, 1).to(self.device)
         
@@ -182,7 +199,14 @@ class Inferencer:
         
         # 5. 重建并反归一化矩阵
         # 目前只处理 Batch 中的第一个样本
-        output_path = os.path.join(self.cfg.inference.output_dir, os.path.basename(self.cond_path))
+        
+        # Determine output path
+        if os.path.isdir(self.cond_path):
+            rel_path = os.path.relpath(cond_path, self.cond_path)
+            output_path = os.path.join(self.cfg.inference.output_dir, rel_path)
+        else:
+            output_path = os.path.join(self.cfg.inference.output_dir, os.path.basename(cond_path))
+            
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         torch.save(self._reconstruct_matrices(samples[0]), output_path)
         print(f"Output saved to {output_path}")
@@ -215,13 +239,9 @@ class Inferencer:
                 matrix_data = matrix_flat.reshape(cols, rows) 
                 
                 # 2. 反归一化 (在转置状态下进行，因为 Stats 是基于转置计算的)
-                if 'means' in self.stats and name in self.stats['means']:
-                    mean = self.stats['means'][name]
-                    std = self.stats['stds'][name]
-                    matrix_data = matrix_data * std + mean
-                elif name in self.stats:
-                    stat = self.stats[name]
-                    matrix_data = matrix_data * stat['std'] + stat['mean']
+                mean = self.stats['means'][name]
+                std = self.stats['stds'][name]
+                matrix_data = matrix_data * std + mean
                 
                 # 3. 最后转置回原始形状 (2048, 2)
                 matrix_data = matrix_data.T
@@ -229,13 +249,9 @@ class Inferencer:
             else: # 针对 A 矩阵 (a1, a2)，它们本来就是 (Rank, Dim)，无需特殊处理
                 matrix_data = matrix_flat.reshape(rows, cols)
                 
-                if 'means' in self.stats and name in self.stats['means']:
-                    mean = self.stats['means'][name]
-                    std = self.stats['stds'][name]
-                    matrix_data = matrix_data * std + mean
-                elif name in self.stats:
-                    stat = self.stats[name]
-                    matrix_data = matrix_data * stat['std'] + stat['mean']
+                mean = self.stats['means'][name]
+                std = self.stats['stds'][name]
+                matrix_data = matrix_data * std + mean
             
             results[name] = matrix_data.cpu()
             

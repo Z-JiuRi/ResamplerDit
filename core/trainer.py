@@ -77,15 +77,23 @@ class Trainer:
         # 创建学习率调度器
         steps_per_epoch = len(self.train_loader)
         tot_steps = steps_per_epoch * cfg.train.epochs
-        if cfg.lr_scheduler.type == 'cosine_warmup':
-            kwargs = {
-                'scheduler_type': cfg.lr_scheduler.type,
-                'warmup_steps': cfg.lr_scheduler.warmup_ratio * tot_steps,
-                'max_steps': tot_steps,
-                'start_lr': cfg.lr_scheduler.start_lr,
-                'eta_min': cfg.lr_scheduler.eta_min
-            }
-        self.scheduler = get_lr_scheduler(self.optimizer, **kwargs)
+        # if cfg.lr_scheduler.type == 'cosine_warmup':
+        #     kwargs = {
+        #         'scheduler_type': cfg.lr_scheduler.type,
+        #         'warmup_steps': cfg.lr_scheduler.warmup_ratio * tot_steps,
+        #         'max_steps': tot_steps,
+        #         'start_lr': cfg.lr_scheduler.start_lr,
+        #         'eta_min': cfg.lr_scheduler.eta_min
+        #     }
+        # self.scheduler = get_lr_scheduler(self.optimizer, **kwargs)
+        from utils.scheduler import CosineAnnealingRestartAtPoints
+        self.scheduler = CosineAnnealingRestartAtPoints(
+            optimizer=self.optimizer,
+            restart_points=cfg.lr_scheduler.restart_points,
+            max_steps=tot_steps,
+            decay_ratio=cfg.lr_scheduler.decay_ratio,
+            eta_min=cfg.lr_scheduler.eta_min
+        )
         
         self.start_epoch = 1 
         self.step = 0
@@ -183,8 +191,8 @@ class Trainer:
                     best_loss = val_loss
                     self.save_checkpoint('best')
             
-            if epoch % self.cfg.train.save_interval == 0:
-                self.save_checkpoint(epoch)
+            # if epoch % self.cfg.train.save_interval == 0:
+            #     self.save_checkpoint(epoch)
             
 
     @torch.no_grad()

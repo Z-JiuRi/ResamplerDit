@@ -7,16 +7,13 @@ export PYTHONPATH=$PYTHONPATH:$(pwd)
 
 mkdir -p logs
 log_file=logs/train_$(date +%Y%m%d_%H%M%S).log
+config_path=configs/config.yaml
+mode=train
 
 # 基础训练命令
 nohup python main.py \
-    --config configs/config.yaml \
+    --config $config_path \
+    --mode $mode \
     > $log_file 2>&1 &
 
-# tail -f $log_file
-
-# # 基础训练命令
-# python main.py \
-#     mode=train \
-#     exp_dir=exps/exp_001 \
-#     train.epochs=10000
+tail -f $log_file

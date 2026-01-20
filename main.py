@@ -7,12 +7,12 @@ from core.inferencer import Inferencer
 def main():
     parser = argparse.ArgumentParser(description='LoRA Diffusion Training')
     parser.add_argument('--config', type=str, default='', help="")
-
+    parser.add_argument('--mode', type=str, default='', help="")
     args = parser.parse_args()
     
     cfg = OmegaConf.load(args.config)
 
-    if cfg.mode == 'train':
+    if args.mode == 'train':
         trainer = Trainer(cfg)
         trainer.train()
     else:
