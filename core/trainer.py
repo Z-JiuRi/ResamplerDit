@@ -86,14 +86,20 @@ class Trainer:
         #         'eta_min': cfg.lr_scheduler.eta_min
         #     }
         # self.scheduler = get_lr_scheduler(self.optimizer, **kwargs)
-        from utils.scheduler import CosineAnnealingRestartAtPoints
-        self.scheduler = CosineAnnealingRestartAtPoints(
-            optimizer=self.optimizer,
-            restart_points=cfg.lr_scheduler.restart_points,
-            max_steps=tot_steps,
-            decay_ratio=cfg.lr_scheduler.decay_ratio,
-            eta_min=cfg.lr_scheduler.eta_min
-        )
+        
+        
+        # from utils.scheduler import CosineAnnealingRestartAtPoints
+        # self.scheduler = CosineAnnealingRestartAtPoints(
+        #     optimizer=self.optimizer,
+        #     restart_points=cfg.lr_scheduler.restart_points,
+        #     max_steps=tot_steps,
+        #     decay_ratio=cfg.lr_scheduler.decay_ratio,
+        #     eta_min=cfg.lr_scheduler.eta_min
+        # )
+        
+        from torch.optim import lr_scheduler
+        self.scheduler = lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=tot_steps, eta_min=cfg.lr_scheduler.eta_min)
+        
         
         self.start_epoch = 1 
         self.step = 0
@@ -148,9 +154,12 @@ class Trainer:
                     loss_dict = self.diffusion(tokens, current_cond, layer_ids=layer_ids, matrix_ids=matrix_ids)
                 
                 loss = loss_dict['loss']
-                cos = loss_dict['cos']
+                cos_sim = loss_dict['cos_sim']
+                norm_sim = loss_dict['norm_sim']
                 cos_small = loss_dict['cos_small']
                 cos_large = loss_dict['cos_large']
+                norm_small = loss_dict['norm_small']
+                norm_large = loss_dict['norm_large']
                 
                 # 2. Backpropagation
                 loss.backward()
@@ -168,9 +177,12 @@ class Trainer:
                 self.step += 1
                 self.writer.add_scalar('Train/Loss', loss.item(), self.step)
                 self.writer.add_scalar('Train/LR', self.scheduler.get_last_lr()[0], self.step)
-                self.writer.add_scalar('Train/Cos', cos.item(), self.step)
+                self.writer.add_scalar('Train/Cos_sim', cos_sim.item(), self.step)
+                self.writer.add_scalar('Train/Norm_sim', norm_sim.item(), self.step)
                 self.writer.add_scalar('Train/Cos_small', cos_small.item(), self.step)
                 self.writer.add_scalar('Train/Cos_large', cos_large.item(), self.step)
+                self.writer.add_scalar('Train/Norm_small', norm_small.item(), self.step)
+                self.writer.add_scalar('Train/Norm_large', norm_large.item(), self.step)
                 self.writer.add_scalar('Train/GradNorm', grad_norm, self.step)
                 
                 pbar.set_postfix({
@@ -202,9 +214,12 @@ class Trainer:
         self.resampler.eval()
         self.dit.eval()
         tot_loss = 0
-        tot_cos = 0
+        tot_cos_sim = 0
+        tot_norm_sim = 0
         tot_cos_small = 0
         tot_cos_large = 0
+        tot_norm_small = 0
+        tot_norm_large = 0
         
         for batch_idx, batch in enumerate(self.val_loader):
             cond = batch['cond'].to(self.device)
@@ -224,20 +239,29 @@ class Trainer:
                 plot_gaussian(pred - target, self.exp_dir / "results" / "diff" / f"[Val]_{epoch}.png")
             
             tot_loss += loss_dict['loss'].item()
-            tot_cos += loss_dict['cos'].item()
+            tot_cos_sim += loss_dict['cos_sim'].item()
+            tot_norm_sim += loss_dict['norm_sim'].item()
             tot_cos_small += loss_dict['cos_small'].item()
             tot_cos_large += loss_dict['cos_large'].item()
+            tot_norm_small += loss_dict['norm_small'].item()
+            tot_norm_large += loss_dict['norm_large'].item()
             
         avg_loss = tot_loss / len(self.val_loader)
-        avg_cos = tot_cos / len(self.val_loader)
+        avg_cos_sim = tot_cos_sim / len(self.val_loader)
+        avg_norm_sim = tot_norm_sim / len(self.val_loader)
         avg_cos_small = tot_cos_small / len(self.val_loader)
         avg_cos_large = tot_cos_large / len(self.val_loader)
+        avg_norm_small = tot_norm_small / len(self.val_loader)
+        avg_norm_large = tot_norm_large / len(self.val_loader)
         
         logger.info(f"[Val] Epoch {epoch}: Loss={avg_loss:.4e}")
         self.writer.add_scalar('Val/Loss', avg_loss, epoch)
-        self.writer.add_scalar('Val/Cos', avg_cos, epoch)
+        self.writer.add_scalar('Val/Cos_sim', avg_cos_sim, epoch)
+        self.writer.add_scalar('Val/Norm_sim', avg_norm_sim, epoch)
         self.writer.add_scalar('Val/Cos_small', avg_cos_small, epoch)
         self.writer.add_scalar('Val/Cos_large', avg_cos_large, epoch)
+        self.writer.add_scalar('Val/Norm_small', avg_norm_small, epoch)
+        self.writer.add_scalar('Val/Norm_large', avg_norm_large, epoch)
         self.ema.restore()
         return avg_loss
 

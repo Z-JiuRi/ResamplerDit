@@ -5,7 +5,7 @@ export PYTHONPATH=$PYTHONPATH:$(pwd)
 
 mkdir -p logs
 log_file=logs/train_$(date +%Y%m%d_%H%M%S).log
-config_path=/home/zxd/zxd/Huawei/ResamplerDit/exps/eps20/logs/config.yaml
+config_path=/home/zxd/zxd/Huawei/ResamplerDit/exps/eps23/logs/config.yaml
 mode=inference
 
 # 基础训练命令

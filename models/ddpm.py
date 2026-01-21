@@ -367,8 +367,8 @@ class GaussianDiffusion(nn.Module):
         loss_small = (loss_per_token * is_small.float()).sum(dim=1) / (is_small.float().sum(dim=1) + 1e-8)
         loss_large = (loss_per_token * is_large.float()).sum(dim=1) / (is_large.float().sum(dim=1) + 1e-8)
         
-        loss_batch = F.mse_loss(denoiser_output, target, reduction='none').mean(dim=[1, 2]) # (B,)
-        # loss_batch = self.small_weight * loss_small + (1 - self.small_weight) * loss_large
+        # loss_batch = F.mse_loss(denoiser_output, target, reduction='none').mean(dim=[1, 2]) # (B,)
+        loss_batch = self.small_weight * loss_small + (1 - self.small_weight) * loss_large
         
         # Min-SNR 加权
         if self.snr_gamma is not None:
@@ -386,12 +386,14 @@ class GaussianDiffusion(nn.Module):
             loss = (loss_batch * loss_weight).mean()
         else:
             loss = loss_batch.mean()
-
+        
+        
         # Metrics
         with torch.no_grad():
             flat_pred = denoiser_output.reshape(x_0.shape[0], -1)
             flat_target = target.reshape(x_0.shape[0], -1)
-            cos = F.cosine_similarity(flat_pred, flat_target, dim=1).mean()
+            cos_sim = F.cosine_similarity(flat_pred, flat_target, dim=1).mean()
+            norm_sim = (torch.norm(flat_pred, dim=1) / (torch.norm(flat_target, dim=1) + 1e-8)).mean()
             
             # 计算每个 Token 的 Cosine: (B, T)
             cos_per_token = F.cosine_similarity(denoiser_output, target, dim=2)
@@ -399,12 +401,31 @@ class GaussianDiffusion(nn.Module):
             # sum() 是对所有 batch 和 token 求和，再除以总数
             cos_small = (cos_per_token * is_small.float()).sum() / (is_small.float().sum() + 1e-8)
             cos_large = (cos_per_token * is_large.float()).sum() / (is_large.float().sum() + 1e-8)
+            
+            # 计算 Norm Sim Small/Large
+            # 1. 计算每个 Token 的平方和 (B, T)
+            pred_sq = denoiser_output.pow(2).sum(dim=2)
+            target_sq = target.pow(2).sum(dim=2)
+            
+            # 2. 根据 Mask 聚合 (B,)
+            pred_norm_small = (pred_sq * is_small.float()).sum(dim=1).sqrt()
+            target_norm_small = (target_sq * is_small.float()).sum(dim=1).sqrt()
+            
+            pred_norm_large = (pred_sq * is_large.float()).sum(dim=1).sqrt()
+            target_norm_large = (target_sq * is_large.float()).sum(dim=1).sqrt()
+            
+            # 3. 计算 Ratio 并平均 (避免除以零)
+            norm_sim_small = (pred_norm_small / (target_norm_small + 1e-8)).mean()
+            norm_sim_large = (pred_norm_large / (target_norm_large + 1e-8)).mean()
         
         loss_dict = {
             'loss': loss,
-            'cos': cos, 
+            'cos_sim': cos_sim,
+            'norm_sim': norm_sim, 
             'cos_small': cos_small,
-            'cos_large': cos_large
+            'cos_large': cos_large,
+            'norm_small': norm_sim_small,
+            'norm_large': norm_sim_large
         }
         if return_pred:
             loss_dict['pred'] = denoiser_output
