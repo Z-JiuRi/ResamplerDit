@@ -1,0 +1,80 @@
+data:
+  data_dir: /nfs5/zxd/Huawei/datasets/lora/data_zscore
+  stats_path: ./data/stats.pth
+  num_workers: 8
+  train_ratio: 0.9
+  device: cuda:1
+  token_size: 128
+  cond_shape:
+  - 224
+  - 512
+  original_shapes:
+    a1:
+    - 2
+    - 64
+    b1:
+    - 2048
+    - 2
+    a2:
+    - 2
+    - 2048
+    b2:
+    - 64
+    - 2
+  max_len: 66
+resampler:
+  latent_cond_len: 128
+  hidden_dim: 512
+  num_heads: 4
+  depth: 4
+  dropout: 0.2
+diffusion:
+  timesteps: 1000
+  prediction_type: eps
+  snr_gamma: 10.0
+  betas:
+    scheduler_type: linear
+    beta_start: 0.0001
+    beta_end: 0.02
+    s: 0.008
+  small_weight: 0.1
+dit:
+  num_heads: 8
+  depth: 8
+  mlp_ratio: 4.0
+  dropout: 0.2
+train:
+  seed: 3407
+  epochs: 2000
+  batch_size: 256
+  weight_decay: 0.05
+  save_interval: 100
+  val_interval: 10
+  grad_clip: 1.0
+  cfg_drop_rate: 0.1
+  ema_rate: 0.999
+  cond_noise_factor: 0.1
+lr_scheduler:
+  type: cosine_restart
+  restart_points:
+  - 0.1
+  - 0.3
+  - 0.8
+  decay_ratio: 0.7
+  max_lr: 0.0005
+  warmup_ratio: 0.1
+  start_lr: 1.0e-05
+  eta_min: 1.0e-05
+inference:
+  seed: 3407
+  use_ema: true
+  config: exps/eps29/logs/config.yaml
+  checkpoint_path: exps/eps29/ckpts/best.pth
+  cond_path: /home/zxd/zxd/Huawei/datasets/lora/test/conditions
+  cfg_scale: 1.0
+  use_ddim: true
+  ddim_steps: 50
+  eta: 1.0
+  output_dir: exps/eps29/inference
+exp_dir: exps/eps29
+msg: 1

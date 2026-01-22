@@ -77,6 +77,7 @@ class Trainer:
         # 创建学习率调度器
         steps_per_epoch = len(self.train_loader)
         tot_steps = steps_per_epoch * cfg.train.epochs
+        
         # if cfg.lr_scheduler.type == 'cosine_warmup':
         #     kwargs = {
         #         'scheduler_type': cfg.lr_scheduler.type,

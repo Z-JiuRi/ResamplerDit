@@ -24,20 +24,20 @@ data:
   max_len: 66
 resampler:
   latent_cond_len: 128
-  hidden_dim: 1024
-  num_heads: 8
+  hidden_dim: 512
+  num_heads: 4
   depth: 4
   dropout: 0.2
 diffusion:
   timesteps: 1000
   prediction_type: eps
-  snr_gamma: 5.0
+  snr_gamma: 10.0
   betas:
     scheduler_type: linear
     beta_start: 0.0001
     beta_end: 0.02
     s: 0.008
-  small_weight: 0.2
+  small_weight: 0.1
 dit:
   num_heads: 8
   depth: 8
@@ -52,8 +52,8 @@ train:
   val_interval: 10
   grad_clip: 1.0
   cfg_drop_rate: 0.1
-  ema_rate: 0.9999
-  cond_noise_factor: 0.01
+  ema_rate: 0.999
+  cond_noise_factor: 0.1
 lr_scheduler:
   type: cosine_restart
   restart_points: [0.1, 0.3, 0.8]
@@ -65,14 +65,14 @@ lr_scheduler:
 inference:
   seed: 3407
   use_ema: true
-  config: exps/eps25/logs/config.yaml
-  checkpoint_path: exps/eps25/ckpts/best.pth
+  config: exps/eps29/logs/config.yaml
+  checkpoint_path: exps/eps29/ckpts/best.pth
   cond_path: /home/zxd/zxd/Huawei/datasets/lora/test/conditions
   cfg_scale: 1.0
   use_ddim: true
   ddim_steps: 50
   eta: 1.0
-  output_dir: exps/eps25/inference
+  output_dir: exps/eps29/inference
 mode: train
-exp_dir: exps/eps25
+exp_dir: exps/eps29
 msg: 1

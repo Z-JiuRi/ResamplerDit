@@ -1,6 +1,10 @@
-exps/
+ckpts/
 
-logs/
+results/
+
+inference/
+
+outlogs/
 
 old/
 

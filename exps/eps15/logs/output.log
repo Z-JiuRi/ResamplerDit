@@ -1,0 +1,19 @@
+[01-18 01:25:10|data.dataloader]- Loaded stats from data/stats.pth
+[01-18 01:25:10|core.trainer]- [训练]: 765
+[01-18 01:25:10|core.trainer]- [验证]: 85
+[01-18 01:25:16|core.trainer]- Starting training...
+[01-18 01:25:23|core.trainer]- [Train] Epoch 1: Loss=1.2012e+00
+[01-18 01:25:29|core.trainer]- [Train] Epoch 2: Loss=1.1802e+00
+[01-18 01:25:36|core.trainer]- [Train] Epoch 3: Loss=1.1856e+00
+[01-18 01:25:42|core.trainer]- [Train] Epoch 4: Loss=1.1783e+00
+[01-18 01:25:48|core.trainer]- [Train] Epoch 5: Loss=1.1408e+00
+[01-18 01:25:54|core.trainer]- [Train] Epoch 6: Loss=1.1161e+00
+[01-18 01:26:00|core.trainer]- [Train] Epoch 7: Loss=1.0649e+00
+[01-18 01:26:06|core.trainer]- [Train] Epoch 8: Loss=1.0018e+00
+[01-18 01:26:12|core.trainer]- [Train] Epoch 9: Loss=9.7937e-01
+[01-18 01:26:20|core.trainer]- [Train] Epoch 10: Loss=9.4192e-01
+[01-18 01:26:22|core.trainer]- [Val] Epoch 10: Loss=1.2411e+00
+[01-18 01:26:52|core.trainer]- Saved checkpoint to exps/eps15/ckpts/best.pth
+[01-18 01:26:57|core.trainer]- [Train] Epoch 11: Loss=9.4371e-01
+[01-18 01:27:03|core.trainer]- [Train] Epoch 12: Loss=9.3168e-01
+[01-18 01:27:08|core.trainer]- [Train] Epoch 13: Loss=9.3223e-01
