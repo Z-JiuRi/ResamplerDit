@@ -97,9 +97,10 @@ class Trainer:
         #     decay_ratio=cfg.lr_scheduler.decay_ratio,
         #     eta_min=cfg.lr_scheduler.eta_min
         # )
-        
+        lr_cfg = dict(cfg.lr_scheduler)
+        lr_cfg["max_steps"] = tot_steps
         from torch.optim import lr_scheduler
-        self.scheduler = lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=tot_steps, eta_min=cfg.lr_scheduler.eta_min)
+        self.scheduler = get_lr_scheduler(self.optimizer, **lr_cfg)
         
         
         self.start_epoch = 1 
@@ -115,9 +116,10 @@ class Trainer:
             decay=cfg.train.get('ema_rate', 0.999)
         )
 
-        # 如果配置中有 resume 路径，可以在这里自动加载
-        # if cfg.train.resume_path:
-        #     self.load_checkpoint(cfg.train.resume_path)
+        pretrained = getattr(cfg.train, 'pretrained', None)
+        resume = getattr(cfg.train, 'resume', False)
+        if pretrained:
+            self.load_checkpoint(pretrained, resume=resume)
 
     def train(self):
         logger.info("Starting training...")
@@ -202,7 +204,7 @@ class Trainer:
                 val_loss = self.validate(epoch)
                 if val_loss < best_loss:
                     best_loss = val_loss
-                    self.save_checkpoint('best')
+                    self.save_checkpoint('best', is_best=True)
             
             # if epoch % self.cfg.train.save_interval == 0:
             #     self.save_checkpoint(epoch)
@@ -266,8 +268,11 @@ class Trainer:
         self.ema.restore()
         return avg_loss
 
-    def save_checkpoint(self, epoch):
-        path = self.exp_dir / "ckpts" / f"{epoch}.pth"
+    def save_checkpoint(self, epoch, is_best=False):
+        # 如果是 best，文件名叫 best.pth，但内部记录的 epoch 依然是当前的数字
+        filename = "best.pth" if is_best else f"{epoch}.pth"
+        path = self.exp_dir / "ckpts" / filename
+        
         torch.save({
             'resampler': self.resampler.state_dict(),
             'dit': self.dit.state_dict(),
@@ -275,25 +280,15 @@ class Trainer:
             'optimizer': self.optimizer.state_dict(),
             'scheduler': self.scheduler.state_dict(),
             'ema_shadow': self.ema.shadow,
-            'epoch': epoch
+            'epoch': epoch  # 始终保存数字类型的 epoch
         }, path)
         logger.info(f"Saved checkpoint to {path}")
     
-    def save_checkpoint(self, epoch):
-        path = self.exp_dir / "ckpts" / f"{epoch}.pth"
-        torch.save({
-            'resampler': self.resampler.state_dict(),
-            'dit': self.dit.state_dict(),
-            'null_cond': self.null_cond,
-            'optimizer': self.optimizer.state_dict(),
-            'scheduler': self.scheduler.state_dict(),
-            'ema_shadow': self.ema.shadow,
-            'epoch': epoch
-        }, path)
-        logger.info(f"Saved checkpoint to {path}")
     
-    def load_checkpoint(self, path):
+    def load_checkpoint(self, path, resume=False):
         checkpoint = torch.load(path, map_location=self.device) # 确保 map_location
+        
+        # 1. 始终加载模型参数
         self.resampler.load_state_dict(checkpoint['resampler'])
         self.dit.load_state_dict(checkpoint['dit'])
         
@@ -301,14 +296,23 @@ class Trainer:
         if 'null_cond' in checkpoint:
             self.null_cond.data = checkpoint['null_cond'].data
             
-        self.optimizer.load_state_dict(checkpoint['optimizer'])
-        
-        # [建议新增] 加载 LR 调度器
-        if 'scheduler' in checkpoint and hasattr(self, 'scheduler'):
-            self.scheduler.load_state_dict(checkpoint['scheduler'])
+        # 2. 根据 resume 参数决定是否加载训练状态
+        if resume:
+            self.optimizer.load_state_dict(checkpoint['optimizer'])
             
-        self.start_epoch = checkpoint['epoch'] + 1
-        if self.training:
-            logger.info(f"Loaded checkpoint from {path}, resuming from epoch {self.start_epoch}")
+            if 'scheduler' in checkpoint and hasattr(self, 'scheduler'):
+                self.scheduler.load_state_dict(checkpoint['scheduler'])
+            
+            if 'ema_shadow' in checkpoint:
+                self.ema.shadow = checkpoint['ema_shadow']
+                
+            self.start_epoch = checkpoint['epoch'] + 1
+            logger.info(f"Resuming training from {path}, start epoch: {self.start_epoch}")
         else:
-            logger.info(f"Loaded checkpoint from {path}")
+            # 如果不 resume，说明是重新训练 (Fine-tune)，
+            # 此时模型参数已经变为预训练参数，必须重置 EMA，
+            # 否则 EMA 还会保留 __init__ 时的随机初始化参数，导致 EMA 效果极差。
+            self.ema.register()
+            
+            self.start_epoch = 1
+            logger.info(f"Loaded pretrained model from {path}, starting from epoch 1 (Training state not loaded, EMA reset to current weights)")

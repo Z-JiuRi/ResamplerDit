@@ -4,9 +4,13 @@ results/
 
 inference/
 
-outlogs/
+trainlogs/
+
+/logs
 
 old/
+
+backups/
 
 __pycache__/
 

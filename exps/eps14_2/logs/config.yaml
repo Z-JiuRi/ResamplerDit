@@ -44,8 +44,6 @@ dit:
   mlp_ratio: 4.0
   dropout: 0.2
 train:
-  # pretrained: None
-  # resume: false
   seed: 3407
   epochs: 10000
   batch_size: 200
@@ -60,11 +58,6 @@ lr_scheduler:
   type: cosine_warmup
   max_lr: 0.0004
   warmup_ratio: 0.1
-  restart_points:
-  - 0.1
-  - 0.3
-  - 0.8
-  decay_ratio: 0.7
   start_lr: 1.0e-05
   eta_min: 1.0e-05
 inference:
