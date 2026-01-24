@@ -75,28 +75,10 @@ class Trainer:
         )
         
         # 创建学习率调度器
-        steps_per_epoch = len(self.train_loader)
+        self.grad_accum_steps = cfg.train.grad_accum_steps
+        steps_per_epoch = len(self.train_loader) // self.grad_accum_steps
         tot_steps = steps_per_epoch * cfg.train.epochs
         
-        # if cfg.lr_scheduler.type == 'cosine_warmup':
-        #     kwargs = {
-        #         'scheduler_type': cfg.lr_scheduler.type,
-        #         'warmup_steps': cfg.lr_scheduler.warmup_ratio * tot_steps,
-        #         'max_steps': tot_steps,
-        #         'start_lr': cfg.lr_scheduler.start_lr,
-        #         'eta_min': cfg.lr_scheduler.eta_min
-        #     }
-        # self.scheduler = get_lr_scheduler(self.optimizer, **kwargs)
-        
-        
-        # from utils.scheduler import CosineAnnealingRestartAtPoints
-        # self.scheduler = CosineAnnealingRestartAtPoints(
-        #     optimizer=self.optimizer,
-        #     restart_points=cfg.lr_scheduler.restart_points,
-        #     max_steps=tot_steps,
-        #     decay_ratio=cfg.lr_scheduler.decay_ratio,
-        #     eta_min=cfg.lr_scheduler.eta_min
-        # )
         lr_cfg = dict(cfg.lr_scheduler)
         lr_cfg["max_steps"] = tot_steps
         from torch.optim import lr_scheduler
@@ -165,28 +147,29 @@ class Trainer:
                 norm_large = loss_dict['norm_large']
                 
                 # 2. Backpropagation
-                loss.backward()
+                (loss / self.grad_accum_steps).backward()
                 
-                grad_norm = torch.nn.utils.clip_grad_norm_(
-                    list(self.resampler.parameters()) + list(self.dit.parameters()) + [self.null_cond], 
-                    self.cfg.train.grad_clip
-                )
-                self.optimizer.step()
-                self.ema.update()
-                self.scheduler.step()
-                self.optimizer.zero_grad()
-                
-                # 4. Logging
-                self.step += 1
-                self.writer.add_scalar('Train/Loss', loss.item(), self.step)
-                self.writer.add_scalar('Train/LR', self.scheduler.get_last_lr()[0], self.step)
-                self.writer.add_scalar('Train/Cos_sim', cos_sim.item(), self.step)
-                self.writer.add_scalar('Train/Norm_sim', norm_sim.item(), self.step)
-                self.writer.add_scalar('Train/Cos_small', cos_small.item(), self.step)
-                self.writer.add_scalar('Train/Cos_large', cos_large.item(), self.step)
-                self.writer.add_scalar('Train/Norm_small', norm_small.item(), self.step)
-                self.writer.add_scalar('Train/Norm_large', norm_large.item(), self.step)
-                self.writer.add_scalar('Train/GradNorm', grad_norm, self.step)
+                if (batch_idx + 1) % self.grad_accum_steps == 0:
+                    grad_norm = torch.nn.utils.clip_grad_norm_(
+                        list(self.resampler.parameters()) + list(self.dit.parameters()) + [self.null_cond], 
+                        self.cfg.train.grad_clip
+                    )
+                    self.optimizer.step()
+                    self.ema.update()
+                    self.scheduler.step()
+                    self.optimizer.zero_grad()
+                    
+                    # 4. Logging
+                    self.step += 1
+                    self.writer.add_scalar('Train/Loss', loss.item(), self.step)
+                    self.writer.add_scalar('Train/LR', self.scheduler.get_last_lr()[0], self.step)
+                    self.writer.add_scalar('Train/Cos_sim', cos_sim.item(), self.step)
+                    self.writer.add_scalar('Train/Norm_sim', norm_sim.item(), self.step)
+                    self.writer.add_scalar('Train/Cos_small', cos_small.item(), self.step)
+                    self.writer.add_scalar('Train/Cos_large', cos_large.item(), self.step)
+                    self.writer.add_scalar('Train/Norm_small', norm_small.item(), self.step)
+                    self.writer.add_scalar('Train/Norm_large', norm_large.item(), self.step)
+                    self.writer.add_scalar('Train/GradNorm', grad_norm, self.step)
                 
                 pbar.set_postfix({
                     'loss': f"{loss.item():.4e}",

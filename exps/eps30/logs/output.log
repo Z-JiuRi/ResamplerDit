@@ -1,0 +1,9 @@
+[01-25 03:46:35|core.trainer]- [训练]: 765
+[01-25 03:46:35|core.trainer]- [验证]: 85
+[01-25 03:46:44|core.trainer]- Starting training...
+[01-25 03:46:53|core.trainer]- [Train] Epoch 1: Loss=1.2611e+00
+[01-25 03:47:00|core.trainer]- [Train] Epoch 2: Loss=1.2420e+00
+[01-25 03:47:07|core.trainer]- [Train] Epoch 3: Loss=1.2642e+00
+[01-25 03:47:14|core.trainer]- [Train] Epoch 4: Loss=1.2542e+00
+[01-25 03:47:21|core.trainer]- [Train] Epoch 5: Loss=1.2505e+00
+[01-25 03:47:29|core.trainer]- [Train] Epoch 6: Loss=1.2174e+00
